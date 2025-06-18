@@ -11,7 +11,7 @@
     "lint": "npx eslint ./script/**/*.ts",
     "lint:fix": "npx eslint ./script/**/*.ts --fix",
     "build": "tsc && shx cp -r ./script/views ./bin/script",
-    "zip": "powershell Compress-Archive -Path ./bin,./package.json,./node_modules -DestinationPath ./deploy.zip -Force",
+    "zip": "powershell Compress-Archive -Path ./bin,./package.json -DestinationPath ./deploy.zip -Force",
     "deploy": "npm run build && npm run zip && az webapp deploy --name codepushapp --resource-group lazywait-code-push --src-path ./deploy.zip --type zip"
   },
   "repository": {
