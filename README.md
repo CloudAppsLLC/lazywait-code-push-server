@@ -41,3 +41,14 @@ Microsoft grants you access to the code in this repository under the MIT License
 Microsoft, Windows, Microsoft Azure and/or other Microsoft products and services referenced in the documentation may be either trademarks or registered trademarks of Microsoft in the United States and/or other countries. The license for this code does not grant you rights to use any Microsoft names, logos, or trademarks. Go to [Microsoft Trademark and Brand Guidelines](http://go.microsoft.com/fwlink/?LinkID=254653) for more information.
 
 Privacy information can be found at https://privacy.microsoft.com/.
+
+### ANDORID
+    in strings.xml, add following line, replacing server-url with your server.
+    
+    <string moduleConfig="true" name="CodePushServerUrl">https://codepushapp-dvgsdugfg8d0a4f0.uaenorth-01.azurewebsites.net</string>
+### IOS
+    in Info.plist file, add following lines, replacing server-url with your server.
+
+    <key>CodePushServerURL</key>
+    <string>https://codepushapp-dvgsdugfg8d0a4f0.uaenorth-01.azurewebsites.net</string>
+### WINDOWS
