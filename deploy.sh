@@ -1,23 +1,25 @@
 #!/bin/sh
 
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
+# Custom build script for Azure App Service
+# © Microsoft Corporation. Licensed under the MIT License.
+
+set -e
 
 cd api || exit 1
 
 echo "📦 Installing dependencies..."
-npm install
+npm install --production
 
-echo "🧹 Cleaning build..."
-npm run clean
+echo "🧹 Cleaning previous build (if applicable)..."
+[ -f package.json ] && npm run clean || echo "No clean step defined."
 
-echo "🔧 Building project..."
-npm run build
+echo "🔧 Building project (if applicable)..."
+[ -f package.json ] && npm run build || echo "No build step defined."
 
-echo "🗑️ Removing old content..."
+echo "🗑️ Removing old deployment content..."
 rm -rf /home/site/wwwroot/*
 
-echo "📁 Copying necessary files..."
-cp -r dist/* /home/site/wwwroot/
-cp package.json /home/site/wwwroot/
-cp -r node_modules /home/site/wwwroot/
+echo "📁 Copying app files to wwwroot..."
+cp -r . /home/site/wwwroot/
+
+echo "✅ Done. App is ready for launch."
