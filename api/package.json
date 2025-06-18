@@ -7,10 +7,12 @@
     "start": "node ./bin/script/server.js",
     "start:env": "node -r dotenv/config ./bin/script/server.js dotenv_config_path=.env dotenv_config_silent=true",
     "clean": "rimraf bin",
-    "build": "tsc && shx cp -r ./script/views ./bin/script",
     "prettier": "prettier --write \"./**/*.ts\"",
     "lint": "npx eslint ./script/**/*.ts",
-    "lint:fix": "npx eslint ./script/**/*.ts --fix"
+    "lint:fix": "npx eslint ./script/**/*.ts --fix",
+    "build": "tsc && shx cp -r ./script/views ./bin/script",
+    "zip": "powershell Compress-Archive -Path ./bin,./package.json,./node_modules -DestinationPath ./deploy.zip -Force",
+    "deploy": "npm run build && npm run zip && az webapp deploy --name codepushapp --resource-group lazywait-code-push --src-path ./deploy.zip --type zip"
   },
   "repository": {
     "type": "git",
