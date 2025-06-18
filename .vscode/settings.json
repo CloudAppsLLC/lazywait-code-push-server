@@ -1,0 +1,4 @@
+{
+    "appService.defaultWebAppToDeploy": "/subscriptions/0d451ca0-6a04-4c67-9ce3-df3ca840a7f8/resourceGroups/lazywait-code-push/providers/Microsoft.Web/sites/codepushapp",
+    "appService.deploySubpath": "."
+}
