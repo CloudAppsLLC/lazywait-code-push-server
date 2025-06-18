@@ -8,7 +8,8 @@
     "build": "tsc",
     "prettier": "prettier --write \"./**/*.ts\"",
     "lint": "npx eslint ./script/**/*.ts",
-    "lint:fix": "npx eslint ./script/**/*.ts --fix"
+    "lint:fix": "npx eslint ./script/**/*.ts --fix",
+    "codepush:login": "code-push-standalone login https://codepushapp-dvgsdugfg8d0a4f0.uaenorth-01.azurewebsites.net"
   },
   "bin": {
     "code-push-standalone": "./bin/script/cli.js"
