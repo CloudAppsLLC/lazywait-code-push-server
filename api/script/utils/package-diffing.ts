@@ -388,12 +388,15 @@ export class PackageDiffer {
   }
 
   private static ensureWorkDirectoryExists(): void {
+    if (!PackageDiffer.WORK_DIRECTORY_PATH) {
+      throw new Error("WORK_DIRECTORY_PATH is undefined in PackageDiffer");
+    }
+
     if (!PackageDiffer.IS_WORK_DIRECTORY_CREATED) {
       if (!fs.existsSync(PackageDiffer.WORK_DIRECTORY_PATH)) {
-        fs.mkdirSync(PackageDiffer.WORK_DIRECTORY_PATH);
+        fs.mkdirSync(PackageDiffer.WORK_DIRECTORY_PATH, { recursive: true });
       }
 
-      // Memoize this check to avoid unnecessary file system access.
       PackageDiffer.IS_WORK_DIRECTORY_CREATED = true;
     }
   }

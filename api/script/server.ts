@@ -11,7 +11,7 @@ defaultServer.start(function (err: Error, app: express.Express) {
   if (err) {
     throw err;
   }
-
+  app.set('trust proxy', true);
   const httpsEnabled: boolean = Boolean(process.env.HTTPS) || false;
   const port = process.env.PORT || 8080;
   let server: any;
