@@ -16,6 +16,7 @@ export enum CommandType {
   collaboratorAdd,
   collaboratorList,
   collaboratorRemove,
+  collaboratorSetPermission,
   debug,
   deploymentAdd,
   deploymentHistory,
@@ -98,6 +99,12 @@ export interface ICollaboratorListCommand extends ICommand {
 export interface ICollaboratorRemoveCommand extends ICommand {
   appName: string;
   email: string;
+}
+
+export interface ICollaboratorSetPermissionCommand extends ICommand {
+  appName: string;
+  email: string;
+  permission: string;
 }
 
 export interface IDebugCommand extends ICommand {

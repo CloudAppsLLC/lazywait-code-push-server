@@ -57,6 +57,35 @@ export function getManagementRouter(config: ManagementConfig): Router {
   const router: Router = Router();
   const nameResolver: NameResolver = new NameResolver(config.storage);
 
+  // Break-glass admin bypass (fail-closed). When ADMIN_EMAILS is unset or empty,
+  // no account is an admin and behavior is identical to the original. Configured
+  // admin EMAILS are resolved to opaque account IDs ONCE at startup, so the
+  // per-request check is an exact account-id match against the server-resolved
+  // authenticated account (req.user.id). No client-supplied value ever feeds this,
+  // and there is no email-casing/normalization surface at request time.
+  const adminAccountIds = new Set<string>();
+  const configuredAdminEmails: string[] = (process.env.ADMIN_EMAILS || "")
+    .split(",")
+    .map((email: string) => email.trim().toLowerCase())
+    .filter((email: string) => email.length > 0); // drop empty members so "" can never match
+
+  q.all(
+    configuredAdminEmails.map((email: string) =>
+      storage
+        .getAccountByEmail(email)
+        .then((account: storageTypes.Account) => {
+          if (account && account.id) {
+            adminAccountIds.add(account.id);
+            console.log(`[admin-bypass] registered admin account for ${email}`);
+          }
+        })
+        .catch(() => {
+          // Fail-closed: an unresolvable admin email simply grants no bypass.
+          console.log(`[admin-bypass] WARNING: could not resolve admin email ${email}; no bypass granted for it`);
+        })
+    )
+  ).done();
+
   router.get("/account", (req: Request, res: Response, next: (err?: any) => void): any => {
     const accountId: string = req.user.id;
     storage
@@ -344,7 +373,7 @@ export function getManagementRouter(config: ManagementConfig): Router {
       .resolveApp(accountId, appName)
       .then((app: storageTypes.App) => {
         appId = app.id;
-        throwIfInvalidPermissions(app, storageTypes.Permissions.Owner);
+        throwIfInvalidPermissions(app, storageTypes.Permissions.Owner, accountId);
         return storage.getDeployments(accountId, appId);
       })
       .then((deployments: storageTypes.Deployment[]) => {
@@ -380,7 +409,7 @@ export function getManagementRouter(config: ManagementConfig): Router {
           errorUtils.sendNotFoundError(res, `App "${appName}" does not exist.`);
           return;
         }
-        throwIfInvalidPermissions(existingApp, storageTypes.Permissions.Owner);
+        throwIfInvalidPermissions(existingApp, storageTypes.Permissions.Owner, accountId);
 
         if ((app.name || app.name === "") && app.name !== existingApp.name) {
           if (NameResolver.isDuplicate(apps, app.name)) {
@@ -426,7 +455,7 @@ export function getManagementRouter(config: ManagementConfig): Router {
     nameResolver
       .resolveApp(accountId, appName)
       .then((app: storageTypes.App) => {
-        throwIfInvalidPermissions(app, storageTypes.Permissions.Owner);
+        throwIfInvalidPermissions(app, storageTypes.Permissions.Owner, accountId);
         return storage.transferApp(accountId, app.id, email);
       })
       .then(() => {
@@ -448,11 +477,34 @@ export function getManagementRouter(config: ManagementConfig): Router {
     nameResolver
       .resolveApp(accountId, appName)
       .then((app: storageTypes.App) => {
-        throwIfInvalidPermissions(app, storageTypes.Permissions.Owner);
+        throwIfInvalidPermissions(app, storageTypes.Permissions.Owner, accountId);
         return storage.addCollaborator(accountId, app.id, email);
       })
       .then(() => {
         res.sendStatus(201);
+      })
+      .catch((error: error.CodePushError) => errorUtils.restErrorHandler(res, error, next))
+      .done();
+  });
+
+  router.patch("/apps/:appName/collaborators/:email", (req: Request, res: Response, next: (err?: any) => void): any => {
+    const accountId: string = req.user.id;
+    const appName: string = req.params.appName;
+    const email: string = req.params.email;
+    const permission: string = req.body && req.body.permission;
+
+    if (isPrototypePollutionKey(email)) {
+      return res.status(400).send("Invalid email parameter");
+    }
+
+    nameResolver
+      .resolveApp(accountId, appName)
+      .then((app: storageTypes.App) => {
+        throwIfInvalidPermissions(app, storageTypes.Permissions.Owner, accountId);
+        return storage.setCollaboratorPermission(accountId, app.id, email, permission);
+      })
+      .then(() => {
+        res.sendStatus(200);
       })
       .catch((error: error.CodePushError) => errorUtils.restErrorHandler(res, error, next))
       .done();
@@ -465,7 +517,7 @@ export function getManagementRouter(config: ManagementConfig): Router {
     nameResolver
       .resolveApp(accountId, appName)
       .then((app: storageTypes.App) => {
-        throwIfInvalidPermissions(app, storageTypes.Permissions.Collaborator);
+        throwIfInvalidPermissions(app, storageTypes.Permissions.Collaborator, accountId);
         return storage.getCollaborators(accountId, app.id);
       })
       .then((retrievedMap: storageTypes.CollaboratorMap) => {
@@ -491,7 +543,8 @@ export function getManagementRouter(config: ManagementConfig): Router {
           app.collaborators && email && app.collaborators[email] && app.collaborators[email].isCurrentAccount;
         throwIfInvalidPermissions(
           app,
-          isAttemptingToRemoveSelf ? storageTypes.Permissions.Collaborator : storageTypes.Permissions.Owner
+          isAttemptingToRemoveSelf ? storageTypes.Permissions.Collaborator : storageTypes.Permissions.Owner,
+          accountId
         );
         return storage.removeCollaborator(accountId, app.id, email);
       })
@@ -511,7 +564,7 @@ export function getManagementRouter(config: ManagementConfig): Router {
       .resolveApp(accountId, appName)
       .then((app: storageTypes.App) => {
         appId = app.id;
-        throwIfInvalidPermissions(app, storageTypes.Permissions.Collaborator);
+        throwIfInvalidPermissions(app, storageTypes.Permissions.Collaborator, accountId);
         return storage.getDeployments(accountId, appId);
       })
       .then((deployments: storageTypes.Deployment[]) => {
@@ -542,7 +595,7 @@ export function getManagementRouter(config: ManagementConfig): Router {
       .resolveApp(accountId, appName)
       .then((app: storageTypes.App) => {
         appId = app.id;
-        throwIfInvalidPermissions(app, storageTypes.Permissions.Owner);
+        throwIfInvalidPermissions(app, storageTypes.Permissions.Owner, accountId);
         return storage.getDeployments(accountId, app.id);
       })
       .then((deployments: storageTypes.Deployment[]): void | Promise<void> => {
@@ -574,7 +627,7 @@ export function getManagementRouter(config: ManagementConfig): Router {
       .resolveApp(accountId, appName)
       .then((app: storageTypes.App) => {
         appId = app.id;
-        throwIfInvalidPermissions(app, storageTypes.Permissions.Collaborator);
+        throwIfInvalidPermissions(app, storageTypes.Permissions.Collaborator, accountId);
         return nameResolver.resolveDeployment(accountId, appId, deploymentName);
       })
       .then((deployment: storageTypes.Deployment) => {
@@ -596,7 +649,7 @@ export function getManagementRouter(config: ManagementConfig): Router {
       .resolveApp(accountId, appName)
       .then((app: storageTypes.App) => {
         appId = app.id;
-        throwIfInvalidPermissions(app, storageTypes.Permissions.Owner);
+        throwIfInvalidPermissions(app, storageTypes.Permissions.Owner, accountId);
         return nameResolver.resolveDeployment(accountId, appId, deploymentName);
       })
       .then((deployment: storageTypes.Deployment) => {
@@ -630,7 +683,7 @@ export function getManagementRouter(config: ManagementConfig): Router {
       .resolveApp(accountId, appName)
       .then((app: storageTypes.App) => {
         appId = app.id;
-        throwIfInvalidPermissions(app, storageTypes.Permissions.Owner);
+        throwIfInvalidPermissions(app, storageTypes.Permissions.Owner, accountId);
         return storage.getDeployments(accountId, app.id);
       })
       .then((storageDeployments: storageTypes.Deployment[]): void | Promise<void> => {
@@ -677,7 +730,7 @@ export function getManagementRouter(config: ManagementConfig): Router {
       .resolveApp(accountId, appName)
       .then((app: storageTypes.App) => {
         appId = app.id;
-        throwIfInvalidPermissions(app, storageTypes.Permissions.Collaborator);
+        throwIfInvalidPermissions(app, storageTypes.Permissions.Collaborator, accountId);
         return storage.getDeployments(accountId, app.id);
       })
       .then((storageDeployments: storageTypes.Deployment[]) => {
@@ -799,7 +852,7 @@ export function getManagementRouter(config: ManagementConfig): Router {
         .resolveApp(accountId, appName)
         .then((app: storageTypes.App) => {
           appId = app.id;
-          throwIfInvalidPermissions(app, storageTypes.Permissions.Collaborator);
+          throwIfInvalidPermissions(app, storageTypes.Permissions.Collaborator, accountId);
           return nameResolver.resolveDeployment(accountId, appId, deploymentName);
         })
         .then((deployment: storageTypes.Deployment) => {
@@ -909,7 +962,7 @@ export function getManagementRouter(config: ManagementConfig): Router {
         .resolveApp(accountId, appName)
         .then((app: storageTypes.App): Promise<storageTypes.Deployment> => {
           appId = app.id;
-          throwIfInvalidPermissions(app, storageTypes.Permissions.Owner);
+          throwIfInvalidPermissions(app, storageTypes.Permissions.Owner, accountId);
           return nameResolver.resolveDeployment(accountId, appId, deploymentName);
         })
         .then((deployment: storageTypes.Deployment): Promise<void> => {
@@ -942,7 +995,7 @@ export function getManagementRouter(config: ManagementConfig): Router {
       .resolveApp(accountId, appName)
       .then((app: storageTypes.App) => {
         appId = app.id;
-        throwIfInvalidPermissions(app, storageTypes.Permissions.Collaborator);
+        throwIfInvalidPermissions(app, storageTypes.Permissions.Collaborator, accountId);
         return nameResolver.resolveDeployment(accountId, appId, deploymentName);
       })
       .then((deployment: storageTypes.Deployment): Promise<storageTypes.Package[]> => {
@@ -968,7 +1021,7 @@ export function getManagementRouter(config: ManagementConfig): Router {
         .resolveApp(accountId, appName)
         .then((app: storageTypes.App) => {
           appId = app.id;
-          throwIfInvalidPermissions(app, storageTypes.Permissions.Collaborator);
+          throwIfInvalidPermissions(app, storageTypes.Permissions.Collaborator, accountId);
           return nameResolver.resolveDeployment(accountId, appId, deploymentName);
         })
         .then((deployment: storageTypes.Deployment): Promise<redis.DeploymentMetrics> => {
@@ -1005,7 +1058,7 @@ export function getManagementRouter(config: ManagementConfig): Router {
         .resolveApp(accountId, appName)
         .then((app: storageTypes.App) => {
           appId = app.id;
-          throwIfInvalidPermissions(app, storageTypes.Permissions.Collaborator);
+          throwIfInvalidPermissions(app, storageTypes.Permissions.Collaborator, accountId);
           // Get source and dest manifests in parallel.
           return q.all([
             nameResolver.resolveDeployment(accountId, appId, sourceDeploymentName),
@@ -1098,7 +1151,7 @@ export function getManagementRouter(config: ManagementConfig): Router {
         .resolveApp(accountId, appName)
         .then((app: storageTypes.App) => {
           appId = app.id;
-          throwIfInvalidPermissions(app, storageTypes.Permissions.Collaborator);
+          throwIfInvalidPermissions(app, storageTypes.Permissions.Collaborator, accountId);
           return nameResolver.resolveDeployment(accountId, appId, deploymentName);
         })
         .then((deployment: storageTypes.Deployment): Promise<storageTypes.Package[]> => {
@@ -1183,7 +1236,14 @@ export function getManagementRouter(config: ManagementConfig): Router {
     return redisManager.invalidateCache(redis.Utilities.getDeploymentKeyHash(deploymentKey));
   }
 
-  function throwIfInvalidPermissions(app: storageTypes.App, requiredPermission: string): boolean {
+  function throwIfInvalidPermissions(app: storageTypes.App, requiredPermission: string, accountId: string): boolean {
+    // Break-glass admin bypass: keyed on the server-resolved authenticated account
+    // id (derived from the validated access key), never on any client-supplied value.
+    if (accountId && adminAccountIds.has(accountId)) {
+      console.log(`[admin-bypass] account=${accountId} app=${app.name} requiredPermission=${requiredPermission}`);
+      return true;
+    }
+
     const collaboratorsMap: storageTypes.CollaboratorMap = app.collaborators;
 
     let isPermitted: boolean = false;
@@ -1257,7 +1317,7 @@ export function getManagementRouter(config: ManagementConfig): Router {
     return storage
       .getApp(accountId, appId)
       .then((storageApp: storageTypes.App) => {
-        throwIfInvalidPermissions(storageApp, storageTypes.Permissions.Collaborator);
+        throwIfInvalidPermissions(storageApp, storageTypes.Permissions.Collaborator, accountId);
         return storage.getPackageHistory(accountId, appId, deploymentId);
       })
       .then((history: storageTypes.Package[]) => {

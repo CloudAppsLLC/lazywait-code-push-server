@@ -252,6 +252,14 @@ class AccountManager {
     return this.del(urlEncode([`/apps/${appName}/collaborators/${email}`])).then(() => null);
   }
 
+  public setCollaboratorPermission(appName: string, email: string, permission: string): Promise<void> {
+    return this.patch(
+      urlEncode([`/apps/${appName}/collaborators/${email}`]),
+      JSON.stringify({ permission: permission }),
+      /*expectResponseBody=*/ false
+    ).then(() => null);
+  }
+
   // Deployments
   public addDeployment(appName: string, deploymentName: string, deploymentKey?: string): Promise<Deployment> {
     const deployment = <Deployment>{ name: deploymentName, key: deploymentKey };

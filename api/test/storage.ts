@@ -761,6 +761,57 @@ function storageTests(StorageType: new (...args: any[]) => storageTypes.Storage,
             assert.equal(0, apps.length);
           });
       });
+
+      it("can promote a collaborator to Owner, allowing multiple owners", () => {
+        return storage
+          .addCollaborator(account2.id, appToTransfer.id, account3.email)
+          .then(() => {
+            return storage.setCollaboratorPermission(account2.id, appToTransfer.id, account3.email, storageTypes.Permissions.Owner);
+          })
+          .then(() => {
+            return storage.getCollaborators(account2.id, appToTransfer.id);
+          })
+          .then((collaboratorList: storageTypes.CollaboratorMap) => {
+            assert.equal(storageTypes.Permissions.Owner, collaboratorList[account2.email].permission);
+            assert.equal(storageTypes.Permissions.Owner, collaboratorList[account3.email].permission);
+          });
+      });
+
+      it("setCollaboratorPermission is idempotent when permission is unchanged", () => {
+        return storage
+          .addCollaborator(account2.id, appToTransfer.id, account3.email)
+          .then(() => {
+            // account3 is already a Collaborator; setting to Collaborator is a no-op and must not throw.
+            return storage.setCollaboratorPermission(
+              account2.id,
+              appToTransfer.id,
+              account3.email,
+              storageTypes.Permissions.Collaborator
+            );
+          })
+          .then(() => {
+            return storage.getCollaborators(account2.id, appToTransfer.id);
+          })
+          .then((collaboratorList: storageTypes.CollaboratorMap) => {
+            assert.equal(storageTypes.Permissions.Collaborator, collaboratorList[account3.email].permission);
+          });
+      });
+
+      it("will reject promise when setting permission for a non-collaborator", () => {
+        return storage
+          .setCollaboratorPermission(account2.id, appToTransfer.id, account3.email, storageTypes.Permissions.Owner)
+          .then(failOnCallSucceeded, (error: storageTypes.StorageError) => {
+            assert.equal(error.code, storageTypes.ErrorCode.NotFound);
+          });
+      });
+
+      it("will reject promise when demoting the last owner", () => {
+        return storage
+          .setCollaboratorPermission(account2.id, appToTransfer.id, account2.email, storageTypes.Permissions.Collaborator)
+          .then(failOnCallSucceeded, (error: storageTypes.StorageError) => {
+            assert.equal(error.code, storageTypes.ErrorCode.Invalid);
+          });
+      });
     });
   });
 

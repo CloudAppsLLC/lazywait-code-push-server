@@ -144,6 +144,7 @@ export interface Storage {
   addCollaborator(accountId: string, appId: string, email: string): Promise<void>;
   getCollaborators(accountId: string, appId: string): Promise<CollaboratorMap>;
   removeCollaborator(accountId: string, appId: string, email: string): Promise<void>;
+  setCollaboratorPermission(accountId: string, appId: string, email: string, permission: string): Promise<void>;
 
   addDeployment(accountId: string, appId: string, deployment: Deployment): Promise<string>;
   getDeployment(accountId: string, appId: string, deploymentId: string): Promise<Deployment>;

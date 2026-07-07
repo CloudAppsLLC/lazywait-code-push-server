@@ -488,6 +488,52 @@ export class AzureStorage implements storage.Storage {
       .catch(AzureStorage.azureErrorHandler);
   }
 
+  public setCollaboratorPermission(accountId: string, appId: string, email: string, permission: string): q.Promise<void> {
+    if (permission !== storage.Permissions.Owner && permission !== storage.Permissions.Collaborator) {
+      return q.reject<void>(storage.storageError(storage.ErrorCode.Invalid, "Invalid permission parameter"));
+    }
+
+    if (isPrototypePollutionKey(email)) {
+      return q.reject<void>(storage.storageError(storage.ErrorCode.Invalid, "Invalid email parameter"));
+    }
+
+    return this._setupPromise
+      .then(() => {
+        return this.getApp(accountId, appId, /*keepCollaboratorIds*/ true);
+      })
+      .then((app: storage.App) => {
+        const targetCollabProperties: storage.CollaboratorProperties = app.collaborators[email];
+
+        if (!targetCollabProperties) {
+          throw storage.storageError(storage.ErrorCode.NotFound, "The given email is not a collaborator for this app.");
+        }
+
+        // Idempotent: nothing to change if the permission already matches.
+        if (targetCollabProperties.permission === permission) {
+          return q(<void>null);
+        }
+
+        // Prevent demoting the last owner of the app.
+        if (permission === storage.Permissions.Collaborator && AzureStorage.isOwner(app.collaborators, email)) {
+          let ownerCount: number = 0;
+          Object.keys(app.collaborators).forEach((collaboratorEmail: string) => {
+            if (app.collaborators[collaboratorEmail].permission === storage.Permissions.Owner) {
+              ownerCount++;
+            }
+          });
+
+          if (ownerCount <= 1) {
+            throw storage.storageError(storage.ErrorCode.Invalid, "Cannot remove the last owner of the app.");
+          }
+        }
+
+        AzureStorage.setCollaboratorPermission(app.collaborators, email, permission);
+
+        return this.updateAppWithPermission(accountId, app, /*updateCollaborator*/ true);
+      })
+      .catch(AzureStorage.azureErrorHandler);
+  }
+
   public addDeployment(accountId: string, appId: string, deployment: storage.Deployment): q.Promise<string> {
     let deploymentId: string;
     return this._setupPromise

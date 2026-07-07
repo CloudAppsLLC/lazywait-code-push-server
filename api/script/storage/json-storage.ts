@@ -360,6 +360,46 @@ export class JsonStorage implements storage.Storage {
     });
   }
 
+  public setCollaboratorPermission(accountId: string, appId: string, email: string, permission: string): Promise<void> {
+    if (permission !== storage.Permissions.Owner && permission !== storage.Permissions.Collaborator) {
+      return JsonStorage.getRejectedPromise(storage.ErrorCode.Invalid, "Invalid permission parameter");
+    }
+
+    if (isPrototypePollutionKey(email)) {
+      return JsonStorage.getRejectedPromise(storage.ErrorCode.Invalid, "Invalid email parameter");
+    }
+
+    return this.getApp(accountId, appId).then((app: storage.App) => {
+      const targetCollabProperties: storage.CollaboratorProperties = app.collaborators[email];
+
+      if (!targetCollabProperties) {
+        return JsonStorage.getRejectedPromise(storage.ErrorCode.NotFound, "The given email is not a collaborator for this app.");
+      }
+
+      // Idempotent: nothing to change if the permission already matches.
+      if (targetCollabProperties.permission === permission) {
+        return q(<void>null);
+      }
+
+      // Prevent demoting the last owner of the app.
+      if (permission === storage.Permissions.Collaborator && this.isOwner(app.collaborators, email)) {
+        let ownerCount: number = 0;
+        Object.keys(app.collaborators).forEach((collaboratorEmail: string) => {
+          if (app.collaborators[collaboratorEmail].permission === storage.Permissions.Owner) {
+            ownerCount++;
+          }
+        });
+
+        if (ownerCount <= 1) {
+          return JsonStorage.getRejectedPromise(storage.ErrorCode.Invalid, "Cannot remove the last owner of the app.");
+        }
+      }
+
+      app.collaborators[email].permission = permission;
+      return this.updateApp(accountId, app, /*ensureIsOwner*/ false);
+    });
+  }
+
   public addDeployment(accountId: string, appId: string, deployment: storage.Deployment): Promise<string> {
     deployment = clone(deployment); // pass by value
 

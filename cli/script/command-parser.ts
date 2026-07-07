@@ -348,6 +348,15 @@ yargs
 
         addCommonConfiguration(yargs);
       })
+      .command("set-permission", "Set a collaborator's permission (Owner or Collaborator)", (yargs: yargs.Argv): void => {
+        isValidCommand = true;
+        yargs
+          .usage(USAGE_PREFIX + " collaborator set-permission <appName> <email> <permission>")
+          .demand(/*count*/ 3, /*max*/ 3) // Require exactly three non-option arguments
+          .example("collaborator set-permission MyApp foo@bar.com Owner", 'Promotes foo@bar.com to Owner of app "MyApp"');
+
+        addCommonConfiguration(yargs);
+      })
       .command("remove", "Remove a collaborator from an app", (yargs: yargs.Argv) => removeCollaborator("remove", yargs))
       .command("rm", "Remove a collaborator from an app", (yargs: yargs.Argv) => removeCollaborator("rm", yargs))
       .command("list", "List the collaborators for an app", (yargs: yargs.Argv) => listCollaborators("list", yargs))
@@ -1010,6 +1019,16 @@ export function createCommand(): cli.ICommand {
 
               (<cli.ICollaboratorAddCommand>cmd).appName = arg2;
               (<cli.ICollaboratorAddCommand>cmd).email = arg3;
+            }
+            break;
+
+          case "set-permission":
+            if (arg2 && arg3 && arg4) {
+              cmd = { type: cli.CommandType.collaboratorSetPermission };
+
+              (<cli.ICollaboratorSetPermissionCommand>cmd).appName = arg2;
+              (<cli.ICollaboratorSetPermissionCommand>cmd).email = arg3;
+              (<cli.ICollaboratorSetPermissionCommand>cmd).permission = arg4;
             }
             break;
 

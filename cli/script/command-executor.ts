@@ -267,6 +267,12 @@ function removeCollaborator(command: cli.ICollaboratorRemoveCommand): Promise<vo
   });
 }
 
+function setCollaboratorPermission(command: cli.ICollaboratorSetPermissionCommand): Promise<void> {
+  return sdk.setCollaboratorPermission(command.appName, command.email, command.permission).then((): void => {
+    log('Successfully set "' + command.email + '" as ' + command.permission + ' for app "' + command.appName + '".');
+  });
+}
+
 function deleteConnectionInfoCache(printMessage: boolean = true): void {
   try {
     fs.unlinkSync(configFilePath);
@@ -498,6 +504,9 @@ export function execute(command: cli.ICommand) {
 
       case cli.CommandType.collaboratorRemove:
         return removeCollaborator(<cli.ICollaboratorRemoveCommand>command);
+
+      case cli.CommandType.collaboratorSetPermission:
+        return setCollaboratorPermission(<cli.ICollaboratorSetPermissionCommand>command);
 
       case cli.CommandType.debug:
         return debugCommand(<cli.IDebugCommand>command);

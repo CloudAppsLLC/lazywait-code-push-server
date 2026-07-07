@@ -1,3 +1,8 @@
+# Deploy artifacts / secrets (never commit)
+deploy.zip
+*.PublishSettings
+.env
+
 # Logs
 logs
 *.log
