@@ -174,7 +174,7 @@ export class JsonStorage implements storage.Storage {
     return q(this.accessKeyNameToAccountIdMap[accessKey].accountId);
   }
 
-  public addApp(accountId: string, app: storage.App): Promise<storage.App> {
+  public addApp(accountId: string, app: storage.App, additionalOwnerAccountIds?: string[]): Promise<storage.App> {
     app = clone(app); // pass by value
 
     const account = this.accounts[accountId];
@@ -185,18 +185,59 @@ export class JsonStorage implements storage.Storage {
     app.id = this.newId();
 
     const map: storage.CollaboratorMap = {};
-    map[account.email] = <storage.CollaboratorProperties>{ accountId: accountId, permission: "Owner" };
+    map[account.email] = <storage.CollaboratorProperties>{ accountId: accountId, permission: storage.Permissions.Owner };
     app.collaborators = map;
 
-    const accountApps = this.accountToAppsMap[accountId];
-    if (accountApps.indexOf(app.id) === -1) {
-      accountApps.push(app.id);
-    }
+    // Default app owners (fail-closed: undefined/empty => no-op, identical to original).
+    // De-dupe by accountId and seed with the creator so the creator is never re-added
+    // (which would double-write a pointer). IDs are already server-resolved & de-duped
+    // at router init; this is defense-in-depth.
+    const seenOwnerAccountIds = new Set<string>([accountId]);
+    (additionalOwnerAccountIds || []).forEach((ownerAccountId: string) => {
+      if (!ownerAccountId || seenOwnerAccountIds.has(ownerAccountId)) {
+        return; // creator or duplicate -> skip
+      }
+      seenOwnerAccountIds.add(ownerAccountId);
+
+      const ownerAccount = this.accounts[ownerAccountId];
+      if (!ownerAccount || !ownerAccount.email) {
+        // Unregistered/unresolvable default owner: skip gracefully, never fail app creation.
+        console.log(`[default-app-owners] WARNING: could not resolve default owner account ${ownerAccountId}; skipping`);
+        return;
+      }
+
+      const ownerEmail: string = ownerAccount.email; // canonical stored casing
+      if (ownerEmail === account.email || app.collaborators[ownerEmail]) {
+        return; // email collision with creator or already present
+      }
+
+      // Q4 mitigation: skip this owner if they already OWN an app of the same name,
+      // which would make bare-name resolution ambiguous for them (storage.ts findAppByName).
+      const ownerAppIds: string[] = this.accountToAppsMap[ownerAccountId] || [];
+      const wouldCollide = ownerAppIds.some((id: string) => {
+        const existing = this.apps[id];
+        return existing && existing.name === app.name && this.isOwner(existing.collaborators, ownerEmail);
+      });
+      if (wouldCollide) {
+        console.log(`[default-app-owners] '${ownerEmail}' already owns an app named '${app.name}'; skipping default-owner grant`);
+        return;
+      }
+
+      app.collaborators[ownerEmail] = <storage.CollaboratorProperties>{ accountId: ownerAccountId, permission: storage.Permissions.Owner };
+    });
+
+    // One pointer per owner in the map (creator + each added default owner).
+    // addAppPointer is idempotent (guards indexOf === -1).
+    Object.keys(app.collaborators).forEach((email: string) => {
+      this.addAppPointer(app.collaborators[email].accountId, app.id);
+    });
 
     if (!this.appToDeploymentsMap[app.id]) {
       this.appToDeploymentsMap[app.id] = [];
     }
 
+    // appToAccountMap stays the CREATOR (primary account for delete/write ownership;
+    // removeApp asserts against it). Must NOT point at a default owner.
     this.appToAccountMap[app.id] = accountId;
 
     this.apps[app.id] = app;

@@ -300,25 +300,80 @@ export class AzureStorage implements storage.Storage {
       .catch(AzureStorage.azureErrorHandler);
   }
 
-  public addApp(accountId: string, app: storage.App): q.Promise<storage.App> {
+  public addApp(accountId: string, app: storage.App, additionalOwnerAccountIds?: string[]): q.Promise<storage.App> {
     app = storage.clone(app); // pass by value
     app.id = shortid.generate();
+
+    let creatorEmail: string;
 
     return this._setupPromise
       .then(() => {
         return this.getAccount(accountId);
       })
       .then((account: storage.Account) => {
+        creatorEmail = account.email;
+
         const collabMap: storage.CollaboratorMap = {};
         collabMap[account.email] = { accountId: accountId, permission: storage.Permissions.Owner };
-
         app.collaborators = collabMap;
 
+        // Default app owners (fail-closed: undefined/empty => no-op). De-dupe by
+        // accountId, seeded with the creator so we never double-write the creator's
+        // pointer (Azure addAppPointer uses createEntity -> throws EntityAlreadyExists
+        // on a duplicate partition+row key).
+        const seenOwnerAccountIds = new Set<string>([accountId]);
+        const candidateOwnerAccountIds: string[] = (additionalOwnerAccountIds || []).filter((ownerAccountId: string) => {
+          if (!ownerAccountId || seenOwnerAccountIds.has(ownerAccountId)) {
+            return false; // creator or duplicate -> skip
+          }
+          seenOwnerAccountIds.add(ownerAccountId);
+          return true;
+        });
+
+        // Resolve each candidate; self/missing/name-collision => skip (never fail create).
+        const resolvePromises: q.Promise<void>[] = candidateOwnerAccountIds.map((ownerAccountId: string) =>
+          this.getAccount(ownerAccountId)
+            .then((ownerAccount: storage.Account): q.Promise<void> | void => {
+              if (!ownerAccount || !ownerAccount.email) return;
+              if (ownerAccount.email === creatorEmail) return; // creator (defense in depth vs id check)
+              if (app.collaborators[ownerAccount.email]) return; // already present
+
+              // Q4 mitigation: skip if this owner already OWNS an app of the same name.
+              // getApps stamps isCurrentAccount via unflattenApp so isDuplicate's
+              // isOwnedByCurrentUser check is correct for the owner.
+              return this.getApps(ownerAccount.id).then((ownerApps: storage.App[]): void => {
+                if (storage.NameResolver.isDuplicate(ownerApps, app.name)) {
+                  console.log(`[default-app-owners] '${ownerAccount.email}' already owns an app named '${app.name}'; skipping default-owner grant`);
+                  return;
+                }
+                AzureStorage.addToCollaborators(app.collaborators, ownerAccount.email, {
+                  accountId: ownerAccount.id,
+                  permission: storage.Permissions.Owner,
+                });
+              });
+            })
+            .catch((): void => {
+              // Fail-open on a single unresolvable/unlistable default owner: never fail
+              // app creation. (getAccount rejects on a missing account.)
+              console.log(`[default-app-owners] WARNING: could not resolve/apply default owner account ${ownerAccountId}; skipping`);
+            })
+        );
+
+        return q.all(resolvePromises);
+      })
+      .then(() => {
+        // The full collaborators map (creator + any default owners) is serialized in
+        // one shot by flattenApp(app, true) -> single atomic insertByAppHierarchy write.
         const flatApp: any = AzureStorage.flattenApp(app, /*updateCollaborator*/ true);
         return this.insertByAppHierarchy(flatApp, app.id);
       })
       .then(() => {
-        return this.addAppPointer(accountId, app.id);
+        // One pointer per owner in the map. seenOwnerAccountIds guaranteed no duplicate
+        // accountId, so no double createEntity -> no EntityAlreadyExists.
+        const pointerPromises: q.Promise<void>[] = Object.keys(app.collaborators).map((email: string) =>
+          this.addAppPointer(app.collaborators[email].accountId, app.id)
+        );
+        return q.all(pointerPromises);
       })
       .then(() => {
         return app;

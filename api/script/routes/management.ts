@@ -86,6 +86,36 @@ export function getManagementRouter(config: ManagementConfig): Router {
     )
   ).done();
 
+  // Default app owners (fail-closed). When DEFAULT_APP_OWNERS is unset/empty, no
+  // default owner is added and app creation behaves identically to the original.
+  // Emails are resolved to opaque account IDs ONCE at startup (same pattern as
+  // adminAccountIds), so the create path never parses env or normalizes email
+  // casing per-request. An unresolvable/unregistered email simply grants no
+  // default ownership and NEVER blocks app creation. A Set de-dupes duplicate
+  // emails and emails that resolve to the same account.
+  const defaultOwnerAccountIds = new Set<string>();
+  const configuredDefaultOwnerEmails: string[] = (process.env.DEFAULT_APP_OWNERS || "")
+    .split(",")
+    .map((email: string) => email.trim().toLowerCase())
+    .filter((email: string) => email.length > 0); // drop empty members
+
+  q.all(
+    configuredDefaultOwnerEmails.map((email: string) =>
+      storage
+        .getAccountByEmail(email)
+        .then((account: storageTypes.Account) => {
+          if (account && account.id) {
+            defaultOwnerAccountIds.add(account.id);
+            console.log(`[default-app-owners] registered default owner account for ${email}`);
+          }
+        })
+        .catch(() => {
+          // Fail-closed: an unresolvable default-owner email simply grants no ownership.
+          console.log(`[default-app-owners] WARNING: could not resolve ${email}; no default ownership granted for it`);
+        })
+    )
+  ).done();
+
   router.get("/account", (req: Request, res: Response, next: (err?: any) => void): any => {
     const accountId: string = req.user.id;
     storage
@@ -315,7 +345,7 @@ export function getManagementRouter(config: ManagementConfig): Router {
           let storageApp: storageTypes.App = converterUtils.toStorageApp(appRequest, new Date().getTime());
 
           return storage
-            .addApp(accountId, storageApp)
+            .addApp(accountId, storageApp, Array.from(defaultOwnerAccountIds))
             .then((app: storageTypes.App): Promise<string[]> => {
               storageApp = app;
               if (!appRequest.manuallyProvisionDeployments) {

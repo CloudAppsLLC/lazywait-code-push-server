@@ -134,7 +134,7 @@ export interface Storage {
   getAccountIdFromAccessKey(accessKey: string): Promise<string>;
   updateAccount(email: string, updates: Account): Promise<void>;
 
-  addApp(accountId: string, app: App): Promise<App>;
+  addApp(accountId: string, app: App, additionalOwnerAccountIds?: string[]): Promise<App>;
   getApps(accountId: string): Promise<App[]>;
   getApp(accountId: string, appId: string): Promise<App>;
   removeApp(accountId: string, appId: string): Promise<void>;
