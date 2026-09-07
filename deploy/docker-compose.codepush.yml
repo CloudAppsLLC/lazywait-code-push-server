@@ -142,14 +142,39 @@ services:
     # healthcheck: it trains everyone to ignore the column. node's own http
     # module is guaranteed present.
     #
-    # /health is the right target: it checks the storage backend, and it treats
-    # an ABSENT Redis as healthy (a configured-but-unreachable one still fails),
-    # which is the state this deployment is in permanently.
+    # THE PROBE IS /version, NOT /health -- deliberately, and this is not the
+    # lazy choice.
+    #
+    # AzureStorage.checkHealth() reads a SENTINEL ROW, getEntity("health","health"),
+    # that setup() is supposed to create. It does not exist in the production
+    # `storagev2` table: the Azure export on 2026-09-07 counted row_health = 0,
+    # and the live App Service consequently answers
+    #   GET https://codepushapp-....azurewebsites.net/health -> 500
+    # today, in production, and has been doing so for as long as anyone has
+    # looked. So /health is 500 here for a reason that has NOTHING to do with
+    # whether this container is alive or whether Azure is reachable -- proven by
+    # the fact that the very same process serves update_check correctly.
+    #
+    # Pointing a restart-worthy probe at that endpoint recreates the exact
+    # failure the comment above complains about: a container permanently marked
+    # (unhealthy) while serving 200s, which trains everyone to ignore the column.
+    # It would be worse here than on the API, because an orchestrator configured
+    # to restart on unhealthy would cycle this container forever -- and every
+    # restart empties the in-process update-check cache, sending the whole
+    # fleet's next check to the database at once.
+    #
+    # /version is the honest liveness signal: it is unauthenticated, it is served
+    # by the same process, and it additionally reports which BUILD is running,
+    # which is the question the VPS's pull-based deploy makes hard to answer.
+    # /health remains the deeper diagnostic for a human -- it just cannot be a
+    # gate until that sentinel row exists (creating it is a WRITE to the live
+    # Azure table, so it is a deliberate human step, not a side effect of a
+    # deploy).
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          "node -e \"require('http').get('http://localhost:9002/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\"",
+          "node -e \"require('http').get('http://localhost:9002/version',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\"",
         ]
       interval: 30s
       timeout: 5s
