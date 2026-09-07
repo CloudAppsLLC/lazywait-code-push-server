@@ -15,7 +15,7 @@
     "codepush:mint-jwt": "tsc && node ./bin/script/scripts/mint-codepush-jwt.js",
     "codepush:verify": "tsc && node ./bin/script/scripts/verify-supabase-setup.js",
     "test:tier1": "tsc && node ./bin/script/scripts/verify-supabase-setup.js --conformance",
-    "zip": "powershell Compress-Archive -Path ./bin,./package.json -DestinationPath ./deploy.zip -Force",
+    "zip": "node ./scripts/make-deploy-zip.js ./deploy.zip ./bin ./package.json ./node_modules",
     "deploy": "npm run build && npm run zip && az webapp deploy --name codepushapp --resource-group lazywait-code-push --src-path ./deploy.zip --type zip"
   },
   "repository": {

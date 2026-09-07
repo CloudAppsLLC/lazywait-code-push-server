@@ -12,7 +12,7 @@
     "clean": "rimraf bin",
     "compile": "tsc",
     "start": "node ./bin/server.js",
-    "zip": "npm run compile && powershell Compress-Archive -Path ./bin,./package.json,./.deployment -DestinationPath ./legacy-proxy.zip -Force",
+    "zip": "npm run compile && node ../../api/scripts/make-deploy-zip.js ./legacy-proxy.zip ./bin ./package.json ./node_modules",
     "deploy": "npm run zip && az webapp deploy --name codepushapp --resource-group lazywait-code-push --src-path ./legacy-proxy.zip --type zip"
   },
   "dependencies": {
