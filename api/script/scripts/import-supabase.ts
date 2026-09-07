@@ -331,6 +331,17 @@ function requireEnv(name: string): string {
 
 // ── http ─────────────────────────────────────────────────────────────────────
 
+/**
+ * Per-request ceiling. A socket that goes quiet must FAIL, not hang.
+ *
+ * The 2026-09-07 dev import died at blob ~250/427 with ECONNRESET, and the
+ * retry then sat with no output and no progress for minutes because nothing
+ * bounded a stalled read. A crash is recoverable -- the importer is idempotent
+ * -- but a hang gives an operator nothing to react to, and at prod scale
+ * (4.93 GB) it is the difference between "re-run it" and "is it working?".
+ */
+const REQUEST_TIMEOUT_MS = 120000;
+
 function httpRequest(
   method: string,
   url: string,
@@ -348,6 +359,7 @@ function httpRequest(
         hostname: parsed.hostname,
         port: parsed.port || undefined,
         path: `${parsed.pathname}${parsed.search}`,
+        timeout: REQUEST_TIMEOUT_MS,
         headers: body ? { ...headers, "Content-Length": String(body.length) } : headers,
       },
       (response: http.IncomingMessage) => {
@@ -364,12 +376,89 @@ function httpRequest(
         response.on("error", reject);
       }
     );
+    // `timeout` on the options only ARMS the timer; node does not abort the
+    // request on its own. Without this listener the socket goes idle and the
+    // promise never settles -- which is exactly the stall this constant exists
+    // to prevent.
+    request.on("timeout", () => {
+      request.destroy(new Error(`request timed out after ${REQUEST_TIMEOUT_MS}ms: ${method} ${url}`));
+    });
     request.on("error", reject);
     if (body) {
       request.write(body);
     }
     request.end();
   });
+}
+
+/**
+ * Transient network faults, which crossing two clouds with gigabytes of bundles
+ * makes ordinary rather than exceptional.
+ *
+ * ECONNRESET is the one that stopped the 2026-09-07 dev import dead at blob
+ * ~250 of 427 and abandoned the remaining 177 copies. A 5xx from either side is
+ * the same class: retry it. A 4xx is NOT here on purpose -- a 404 on a bundle is
+ * a real finding about the source data, and burning three retries on it would
+ * only delay the error.
+ */
+const TRANSIENT_CODES = new Set([
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "ECONNREFUSED",
+  "EPIPE",
+  "EAI_AGAIN",
+  "ENOTFOUND",
+  "UND_ERR_CONNECT_TIMEOUT",
+]);
+
+function isTransient(error: unknown): boolean {
+  const code: string = String((error as { code?: string })?.code || "");
+  const message: string = String((error as Error)?.message || "");
+  return (
+    TRANSIENT_CODES.has(code) ||
+    /socket hang up|timed out|ECONNRESET|EAI_AGAIN|network/i.test(message)
+  );
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * httpRequest plus bounded retry with exponential backoff.
+ *
+ * Retries the REQUEST, never the decision: a non-2xx response is returned to the
+ * caller untouched so the existing missing-blob handling (which distinguishes a
+ * deployment's CURRENT package from a historical one) still runs exactly as
+ * before.
+ */
+async function httpRequestWithRetry(
+  method: string,
+  url: string,
+  headers: Record<string, string>,
+  body?: Buffer,
+  attempts = 4
+): Promise<HttpResponse> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const response: HttpResponse = await httpRequest(method, url, headers, body);
+      // 5xx from Azure or Supabase is worth another go; 4xx is a real answer.
+      if (response.status >= 500 && attempt < attempts) {
+        lastError = new Error(`HTTP ${response.status}`);
+        await sleep(500 * 2 ** (attempt - 1));
+        continue;
+      }
+      return response;
+    } catch (error) {
+      lastError = error;
+      if (!isTransient(error) || attempt === attempts) {
+        throw error;
+      }
+      const backoff: number = 500 * 2 ** (attempt - 1);
+      warn(`${method} ${url.slice(0, 90)} failed (${String((error as Error).message)}); retry ${attempt}/${attempts - 1} in ${backoff}ms`);
+      await sleep(backoff);
+    }
+  }
+  throw lastError;
 }
 
 class SupabaseClient {
@@ -1115,10 +1204,34 @@ async function copyBlobs(client: SupabaseClient, blobRefs: Map<string, BlobRefer
       log(`  ...blobs ${done}/${refs.length}`);
     }
 
-    // Both halves must be present before we skip: a ledger row without an object
-    // is a package row pointing at a 404, which is the exact state that bricks a
-    // till when the release is mandatory.
-    if (existingLedger.has(ref.blobId) && (await client.objectExists(objectPath))) {
+    // THE OBJECT IS THE AUTHORITY, NOT THE LEDGER ROW.
+    //
+    // This used to require BOTH (`existingLedger.has(id) && objectExists(...)`),
+    // with the sound-looking reasoning that a ledger row without an object is a
+    // package pointing at a 404. The reasoning is right; the conjunction was
+    // wrong, because ledger rows are written in ONE batch after every copy
+    // finishes. A run that dies partway therefore leaves 250 objects in the
+    // bucket and ZERO ledger rows -- so on the re-run every one of them missed
+    // the skip and was downloaded and re-uploaded from scratch. That is exactly
+    // what happened on 2026-09-07, and at 4.93 GB it turns a resume into a
+    // full restart.
+    //
+    // Checking the OBJECT alone is both cheaper and safer: an object with no
+    // ledger row is re-registered below (the ledger row is still queued), while
+    // a ledger row with no object is re-copied rather than trusted. Neither
+    // direction can leave a package row pointing at a 404.
+    if (await client.objectExists(objectPath)) {
+      if (!existingLedger.has(ref.blobId)) {
+        // Present in the bucket from an interrupted run, but never registered.
+        ledgerRows.push({
+          id: ref.blobId,
+          bucket: BUCKET,
+          storage_path: objectPath,
+          size_bytes: ref.size || 0,
+          content_type: ref.contentType || "application/octet-stream",
+          created_at: null,
+        });
+      }
       copied.add(ref.blobId);
       bump("blobs_already_present");
       return;
@@ -1127,7 +1240,7 @@ async function copyBlobs(client: SupabaseClient, blobRefs: Map<string, BlobRefer
     // Anonymous GET: the Azure container is created with {access:"blob"}
     // (azure-storage.ts:1001) and getBlobUrl returns a bare URL with no SAS, so
     // this half of the migration needs no Azure credential at all.
-    const response: HttpResponse = await httpRequest("GET", ref.sourceUrl, {});
+    const response: HttpResponse = await httpRequestWithRetry("GET", ref.sourceUrl, {});
     if (response.status !== 200) {
       const message = `Blob ${ref.blobId} is not readable at ${ref.sourceUrl} (HTTP ${response.status})`;
       if (ref.isCurrent && !flags.allowMissingBlobs) {
