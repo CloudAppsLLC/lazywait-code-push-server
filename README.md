@@ -45,10 +45,10 @@ Privacy information can be found at https://privacy.microsoft.com/.
 ### ANDORID
     in strings.xml, add following line, replacing server-url with your server.
     
-    <string moduleConfig="true" name="CodePushServerUrl">https://codepushapp-dvgsdugfg8d0a4f0.uaenorth-01.azurewebsites.net</string>
+    <string moduleConfig="true" name="CodePushServerUrl">https://codepush.lazywait.com</string>
 ### IOS
     in Info.plist file, add following lines, replacing server-url with your server.
 
     <key>CodePushServerURL</key>
-    <string>https://codepushapp-dvgsdugfg8d0a4f0.uaenorth-01.azurewebsites.net</string>
+    <string>https://codepush.lazywait.com</string>
 ### WINDOWS
