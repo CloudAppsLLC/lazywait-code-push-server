@@ -58,10 +58,6 @@
             max-width: 7em;
         }
 
-        .container .microsoft {
-            max-width: 7.9em;
-        }
-
         a {
             background-color: #56ACE2;
             color: black;
@@ -82,17 +78,25 @@
     </style>
 </head>
 <body>
+    <!-- The Microsoft (Personal) and Microsoft (Work / Azure AD) buttons were
+         removed with their passport providers when the service left Azure. EJS
+         throws a ReferenceError on an undefined local, so this template and the
+         three res.render calls in passport-authentication.ts have to lose
+         `isMicrosoftAuthenticationEnabled` together. -->
     <div class="container">
         Please select an authentication provider for your CodePush account:<br />
         <br />
         <% if (isGitHubAuthenticationEnabled) { %>
             <a href="/auth/<%=action%>/github"><img class="github" src="images/GitHub.png"> GitHub</a>
             <span class="spacer"/>
-        <% } %>
-        <% if (isMicrosoftAuthenticationEnabled) { %>
-            <a href="/auth/<%=action%>/microsoft"><img class="microsoft" src="images/windows10.png"> Microsoft (Personal)</a>
-            <span class="spacer"/>
-            <a href="/auth/<%=action%>/azure-ad"><img class="microsoft" src="images/windows10.png"> Microsoft (Work)</a><br />
+        <% } else { %>
+            <!-- No interactive provider configured. Say so, rather than render an
+                 empty page that reads as a broken deployment: access keys can
+                 still be minted directly against POST /accessKeys with an
+                 existing token. -->
+            No interactive sign-in provider is configured on this server.<br />
+            <br />
+            Ask an administrator for an access key.
         <% } %>
     </div>
 </body>

@@ -59,7 +59,7 @@ During the deployment process, the included bicep script will create bare minimu
 2. App Service
 3. Storage account
 
-Additionally, for user authentication, a GitHub or Microsoft OAuth application is needed. 
+Additionally, for interactive user authentication, a GitHub OAuth application is needed. 
 More detailed instructions on how to set up one can be found in the section [OAuth Apps](#oauth-apps).
 
 #### Steps
@@ -99,7 +99,7 @@ in `Info.plist` file, add following lines, replacing `server-url` with your serv
 
 ## OAuth apps
 
-CodePush uses GitHub and Microsoft as identity providers, so for authentication purposes, you need to have an OAuth App registration for CodePush. 
+CodePush uses GitHub as its only interactive identity provider, so for browser sign-in you need a GitHub OAuth App registration for CodePush. API calls do not use it at all -- they carry an access key through the bearer strategy (`script/routes/AUTH.md`). 
 Client id and client secret created during registration should be provided to the CodePush server in environment variables. 
 Below are instructions on how to create OAuth App registrations.
 
@@ -110,19 +110,18 @@ Below are instructions on how to create OAuth App registrations.
 1. `Homepage URL` parameter will be the same as URL of your CodePush application on Azure - `https://codepush-<project-suffix>.azurewebsites.net` (for local development it will be either http://localhost:3000 or https://localhost:8443)
 1. `Authorization callback URL` will be `https://codepush-<project-suffix>.azurewebsites.net/auth/callback/github` (for local development it will be either http://localhost:3000/auth/callback/github or https://localhost:8443/auth/callback/github)
 
-### Microsoft
+### Microsoft — REMOVED
 
-Both work and personal accounts use the same application for authentication. The only difference is property `Supported account types` that is set when creating the app.
+The `microsoft` (personal) and `azure-ad` (work) providers were deleted when this
+fork moved off Azure; they were the last Microsoft identity dependency in the
+request path. `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET` and
+`MICROSOFT_TENANT_ID` are read nowhere and the `/auth/*/microsoft` and
+`/auth/*/azure-ad` routes no longer exist.
 
-1. Register an Azure Registered Application following [official guideline](https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app#register-an-application)
-1. For option `Supported account types`:
-   1. If you want to support both Personal and Work accounts, select `Accounts in any organizational directory (Any Microsoft Entra ID tenant - Multitenant) and personal Microsoft accounts (e.g. Skype, Xbox)`
-   1. If you want to only support Work accounts, choose either `Accounts in this organizational directory only (<your directory> - Single tenant)` or `Accounts in any organizational directory (Any Microsoft Entra ID tenant - Multitenant)` depending if you want to support Single or Multitenant authorization. Make sure to set `MICROSOFT_TENANT_ID` envrionment variable in case of using single tenant application.
-   1. If you want to only support Personal accounts, select `Personal Microsoft accounts only`
-1. Set up Redirect URI(s) depending on the choice you made for `Supported account types`. If you choose both Personal and Work accounts, you need to add both redirect URIs, otherwise just one of the ones:
-   1. Personal account: `https://codepush-<project-suffix>.azurewebsites.net/auth/callback/microsoft` (for local development it will be either http://localhost:3000/auth/callback/microsoft or https://localhost:8443/auth/callback/microsoft)
-   1. Work account: `https://codepush-<project-suffix>.azurewebsites.net/auth/callback/azure-ad` (for local development it will be http://localhost:3000/auth/callback/azure-ad or https://localhost:8443/auth/callback/azure-ad)
-1. Generate secret following this [official guideline](https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app#add-credentials)
+Accounts that registered through those providers still exist and are still keyed by
+email — only the interactive sign-in is gone. See
+[`script/routes/AUTH.md`](./script/routes/AUTH.md) for what those developers do
+instead, and for how access keys are minted and verified.
 
 ## Naming limitations
 

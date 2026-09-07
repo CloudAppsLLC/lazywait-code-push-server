@@ -1,0 +1,121 @@
+name: Deploy CodePush server
+run-name: Build + push CodePush image 📦
+
+# Builds api/Dockerfile and pushes it to GHCR. That is the WHOLE job — CI never
+# touches the server.
+#
+# WHY CI DOES NOT DEPLOY: the VPS is an Aliyun ECS instance whose security group
+# cannot allowlist GitHub's ~3000 rotating egress CIDRs, so Actions cannot SSH
+# in. The box PULLS instead: a root cron entry runs deploy/poll-ghcr-codepush.sh
+# every 60s, notices a new :latest digest, and recreates the one service. A green
+# run here therefore means "the image exists", NOT "the server is running it" —
+# confirm the second with `curl https://codepush.lazywait.com/version` and
+# compare short_sha.
+#
+# Required secrets: none beyond the automatic GITHUB_TOKEN, which is what pushes
+# to the org's GHCR namespace. Unlike the Internal API's workflow there is no
+# private-git-dependency PAT to inject: this project installs from the public npm
+# registry only.
+
+on:
+  push:
+    branches: [main]
+    # A push that changes only docs or deploy plumbing must NOT produce a new
+    # image. Not for CI minutes — because a new digest makes the poller recreate
+    # the container, and a restart empties the in-process update-check cache, so
+    # the whole fleet's next check goes to the database at once. Do not trade
+    # that for a README typo. (Edits under deploy/ are consumed by the VPS via
+    # `git pull`, not by the image.)
+    paths-ignore:
+      - "**.md"
+      - "deploy/**"
+      - ".github/workflows/codeql.yml"
+  # Manual re-run: rebuilding the same commit is how you recover from a GHCR
+  # push that failed halfway, and how you stamp a fresh BUILD_TIME.
+  workflow_dispatch:
+
+concurrency:
+  # Never two builds of this image at once — the later one wins anyway, and two
+  # concurrent pushes to :latest can leave the tag pointing at the older digest.
+  group: codepush-deploy
+  cancel-in-progress: true
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: meta
+        # Two tags, both needed. :latest is what the VPS poller watches, so it is
+        # the deploy trigger. :<short-sha> is what a rollback pins — the whole
+        # revert story for the storage-backend flip is
+        # `CODEPUSH_TAG=<sha> docker compose up -d`, which only works if every
+        # build left an immutable tag behind.
+        run: |
+          SHORT="${GITHUB_SHA:0:7}"
+          echo "short=$SHORT" >> "$GITHUB_OUTPUT"
+          {
+            echo "tags<<EOF"
+            echo "ghcr.io/cloudappsllc/lazywait-code-push-server:latest"
+            echo "ghcr.io/cloudappsllc/lazywait-code-push-server:$SHORT"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build stamp
+        id: stamp
+        # The moment the image is built. `github.event.repository.updated_at` is
+        # NOT this (it is the repo's own mtime and is stale on
+        # workflow_dispatch), and github.sha alone cannot tell two builds of one
+        # commit apart — which is exactly what a manual re-run produces.
+        run: echo "time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: ./api
+          file: ./api/Dockerfile
+          # The VPS is x86_64. Building arm64 as well would roughly double the
+          # build time for an image nothing pulls.
+          platforms: linux/amd64
+          push: true
+          # Baked into the runner stage as ENV and served on GET /version, so
+          # "which build is the box actually running?" is one unauthenticated
+          # curl rather than a route-existence probe.
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+            BUILD_TIME=${{ steps.stamp.outputs.time }}
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=registry,ref=ghcr.io/cloudappsllc/lazywait-code-push-server:buildcache
+          cache-to: type=registry,ref=ghcr.io/cloudappsllc/lazywait-code-push-server:buildcache,mode=max
+
+      - name: Summary
+        run: |
+          {
+            echo "### ✓ Image pushed"
+            echo ""
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            echo "The VPS poller pulls \`:latest\` into \`lazywait-codepush\` within ~60s."
+            echo ""
+            echo "Confirm the container actually swapped (a green run here does NOT mean it did):"
+            echo '```'
+            echo "curl -sS https://codepush.lazywait.com/version"
+            echo "# expect short_sha = ${{ steps.meta.outputs.short }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

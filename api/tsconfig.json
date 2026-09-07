@@ -4,6 +4,19 @@
     "noImplicitAny": false,
     "target": "ES2022",
     "outDir": "./bin",
+    // PINNED, NOT COSMETIC. Without an explicit rootDir tsc infers it as the
+    // longest common directory of the input files, so the emit layout depends on
+    // WHICH directories happen to be present:
+    //   * a working copy has script/ and test/  -> rootDir = .      -> bin/script/server.js
+    //   * api/Dockerfile copies only script/    -> rootDir = script -> bin/server.js
+    // Every consumer hard-codes the first shape: package.json "start" and the
+    // image's CMD both run ./bin/script/server.js, the build script copies the
+    // EJS views to ./bin/script/views (default-server.ts resolves them as
+    // __dirname + "/views"), and test:conformance runs ./bin/test/*.js. The
+    // container therefore built cleanly and then exited with MODULE_NOT_FOUND on
+    // a path that exists in every developer's checkout. Pinning it makes the two
+    // layouts identical.
+    "rootDir": ".",
     "skipLibCheck": true
   },
   "exclude": [

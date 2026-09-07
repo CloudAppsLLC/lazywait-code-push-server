@@ -1,0 +1,27 @@
+{
+  "name": "lazywait-codepush-legacy-proxy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Transparent reverse proxy that keeps the retired Azure CodePush hostname answering. Pipes every request to CODEPUSH_UPSTREAM and stamps X-Legacy-Host: azure so the upstream access log can tell fielded binaries apart from new ones.",
+  "license": "MIT",
+  "main": "./bin/server.js",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "clean": "rimraf bin",
+    "compile": "tsc",
+    "start": "node ./bin/server.js",
+    "zip": "npm run compile && powershell Compress-Archive -Path ./bin,./package.json,./.deployment -DestinationPath ./legacy-proxy.zip -Force",
+    "deploy": "npm run zip && az webapp deploy --name codepushapp --resource-group lazywait-code-push --src-path ./legacy-proxy.zip --type zip"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.17",
+    "@types/node": "^20.1.4",
+    "rimraf": "^5.0.1",
+    "typescript": "^5.0.4"
+  }
+}

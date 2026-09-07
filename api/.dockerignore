@@ -1,0 +1,48 @@
+# Build context exclusions for api/Dockerfile.
+#
+# THE FIRST ENTRY IS THE IMPORTANT ONE. api/.env exists in every working copy
+# and carries live Azure storage-account credentials. A build context that
+# includes it puts those keys in a layer of an image published to GHCR, where
+# anyone with a pull token can `docker save` and read them back out. The
+# Dockerfile also copies three explicit paths rather than `COPY . .`, so this
+# file is the second of two independent guards, not the only one.
+.env
+.env.*
+!.env.example
+
+# Never ship an Azure deployment descriptor or the zip it produces.
+.azure
+.deployment
+deploy.zip
+codepush-infrastructure.bicep
+parameters.json
+_makezip.js
+
+# Rebuilt inside the image; a host-built copy would shadow it with whatever
+# node version and OS the laptop happened to have.
+node_modules
+bin
+
+# Local storage backends and their persisted state.
+JsonStorage.json
+__azurite_db_*
+__blobstorage__
+__queuestorage__
+uploads
+downloads
+
+# Certificates. HTTPS is never enabled in the container (Caddy terminates TLS
+# one hop upstream), so these have no business in the image even if present.
+certs
+*.crt
+*.pem
+*.key
+*.cnf
+
+# Dev-only tooling and docs — no effect on the runtime, but they invalidate the
+# build cache on every edit.
+.eslintrc.json
+prettier.config.js
+.vscode
+*.md
+test

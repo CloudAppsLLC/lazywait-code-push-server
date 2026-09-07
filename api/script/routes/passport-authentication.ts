@@ -4,10 +4,8 @@
 import * as cookieSession from "cookie-session";
 import { Request, Response, Router, RequestHandler } from "express";
 import * as passport from "passport";
-const passportActiveDirectory = require("passport-azure-ad");
 import * as passportBearer from "passport-http-bearer";
 import * as passportGitHub from "passport-github2";
-import * as passportWindowsLive from "passport-windowslive";
 import * as q from "q";
 import * as superagent from "superagent"
 import rateLimit from "express-rate-limit";
@@ -38,10 +36,27 @@ interface EmailAccount {
   primary?: boolean;
 }
 
+// The `microsoft` (passport-windowslive) and `azure-ad` (passport-azure-ad)
+// interactive providers were removed when the service moved off Azure: they were
+// the last thing in the REQUEST PATH that talked to a Microsoft identity endpoint,
+// and keeping them would have meant re-registering two more redirect URIs against
+// the new host for a login nobody here uses.
+//
+// This is a no-op for anyone holding a token. The bearer strategy below is
+// registered unconditionally, it is the only strategy any API call goes through,
+// and access keys are stored as sha256(name) which migrates verbatim -- so every
+// CLI token, every developer's .code-push.config and the dashboard proxy's
+// CODEPUSH_AUTH_TOKEN keep working. Those two providers only ever minted a session
+// key at the END of an interactive browser flow.
+//
+// storage.Account keeps its `microsoftId` / `azureAdId` fields and the schema keeps
+// its `microsoft_id` / `azure_ad_id` columns on purpose: accounts registered that
+// way still exist, are still keyed by EMAIL, and their linked-provider list is
+// still reported honestly by converter.ts. What such a developer loses is the
+// ability to log IN with that provider -- see script/routes/AUTH.md, "Accounts that
+// registered with Microsoft".
 export class PassportAuthentication {
-  private static AZURE_AD_PROVIDER_NAME = "azure-ad";
   private static GITHUB_PROVIDER_NAME = "github";
-  private static MICROSOFT_PROVIDER_NAME = "microsoft";
 
   private _cookieSessionMiddleware: RequestHandler;
   private _serverUrl: string;
@@ -153,31 +168,26 @@ export class PassportAuthentication {
       this.setupGitHubRoutes(router, gitHubClientId, gitHubClientSecret);
     }
 
-    // See https://msdn.microsoft.com/en-us/library/hh243649.aspx for more information.
-    // MICROSOFT_CLIENT_ID:     The client ID you received from Microsoft when registering an app.
-    // MICROSOFT_CLIENT_SECRET: The client secret you received from Microsoft when registering an app.
-    const microsoftClientId: string = process.env["MICROSOFT_CLIENT_ID"];
-    const microsoftClientSecret: string = process.env["MICROSOFT_CLIENT_SECRET"];
-    const isMicrosoftAuthenticationEnabled: boolean = !!this._serverUrl && !!microsoftClientId && !!microsoftClientSecret;
+    // MICROSOFT_CLIENT_ID / MICROSOFT_CLIENT_SECRET are no longer read anywhere.
+    // Leaving them set in an environment is harmless; they simply do nothing.
 
-    if (isMicrosoftAuthenticationEnabled) {
-      this.setupMicrosoftRoutes(router, microsoftClientId, microsoftClientSecret);
-      this.setupAzureAdRoutes(router, microsoftClientId, microsoftClientSecret);
-    }
-
+    // NOTE: when NO interactive provider is configured these three pages still
+    // render, and correctly so -- authenticate.ejs then shows the "no provider
+    // configured" line instead of an empty box. The alternative (404) would look
+    // like a broken deployment to a developer running `code-push-standalone login`.
     router.get("/auth/login", this._cookieSessionMiddleware, (req: Request, res: Response): any => {
       req.session["hostname"] = req.query.hostname;
-      res.render("authenticate", { action: "login", isGitHubAuthenticationEnabled, isMicrosoftAuthenticationEnabled });
+      res.render("authenticate", { action: "login", isGitHubAuthenticationEnabled });
     });
 
     router.get("/auth/link", this._cookieSessionMiddleware, (req: Request, res: Response): any => {
       req.session["authorization"] = req.query.access_token;
-      res.render("authenticate", { action: "link", isGitHubAuthenticationEnabled, isMicrosoftAuthenticationEnabled });
+      res.render("authenticate", { action: "link", isGitHubAuthenticationEnabled });
     });
 
     router.get("/auth/register", this._cookieSessionMiddleware, (req: Request, res: Response): any => {
       req.session["hostname"] = req.query.hostname;
-      res.render("authenticate", { action: "register", isGitHubAuthenticationEnabled, isMicrosoftAuthenticationEnabled });
+      res.render("authenticate", { action: "register", isGitHubAuthenticationEnabled });
     });
 
     return router;
@@ -187,7 +197,11 @@ export class PassportAuthentication {
     const emailAccounts: EmailAccount[] = user.emails;
 
     if (!emailAccounts || emailAccounts.length === 0) {
-      return (<any>user)?._json?.email || (<any>user)?._json?.preferred_username || (<any>user).oid; // This is the format used by passport-azure-ad
+      // GitHub omits `emails` entirely when the user's addresses are all private,
+      // even with the `user:email` scope, so the `_json.email` fallback stays. The
+      // `preferred_username` / `oid` fallbacks that used to follow it were the
+      // passport-azure-ad claim shape and went with that provider.
+      return (<any>user)?._json?.email;
     }
 
     let emailAddress: string;
@@ -218,14 +232,14 @@ export class PassportAuthentication {
     }
   }
 
+  // Still a switch with a throwing default rather than a straight property read:
+  // the provider name reaches these from setupCommonRoutes' closure, so a future
+  // provider added without wiring it up here must fail loudly instead of silently
+  // comparing `undefined === user.id` and letting anyone log in as anyone.
   private static getProviderId(account: storage.Account, provider: string): string {
     switch (provider) {
-      case PassportAuthentication.AZURE_AD_PROVIDER_NAME:
-        return account.azureAdId;
       case PassportAuthentication.GITHUB_PROVIDER_NAME:
         return account.gitHubId;
-      case PassportAuthentication.MICROSOFT_PROVIDER_NAME:
-        return account.microsoftId;
       default:
         throw new Error("Unrecognized provider");
     }
@@ -233,14 +247,8 @@ export class PassportAuthentication {
 
   private static setProviderId(account: storage.Account, provider: string, id: string): void {
     switch (provider) {
-      case PassportAuthentication.AZURE_AD_PROVIDER_NAME:
-        account.azureAdId = id;
-        return;
       case PassportAuthentication.GITHUB_PROVIDER_NAME:
         account.gitHubId = id;
-        return;
-      case PassportAuthentication.MICROSOFT_PROVIDER_NAME:
-        account.microsoftId = id;
         return;
       default:
         throw new Error("Unrecognized provider");
@@ -302,13 +310,7 @@ export class PassportAuthentication {
         }
 
         const emailAddress: string = PassportAuthentication.getEmailAddress(user);
-        if (!emailAddress && providerName === PassportAuthentication.MICROSOFT_PROVIDER_NAME) {
-          const message: string =
-            "You've successfully signed in your Microsoft account, but we couldn't get an email address from it." +
-            "<br/>Please fill the basic information (i.e. First/Last name, Email address) for your Microsoft account in case of absence, then try to run 'code-push-standalone login' again.";
-          restErrorUtils.sendForbiddenPage(res, message);
-          return;
-        } else if (!emailAddress) {
+        if (!emailAddress) {
           restErrorUtils.sendUnknownError(
             res,
             new Error(`Couldn't get an email address from the ${providerName} OAuth provider for user ${JSON.stringify(user)}`),
@@ -421,6 +423,12 @@ export class PassportAuthentication {
       }
     );
 
+    // This route is provider-independent but lives inside setupCommonRoutes, so it
+    // is registered once PER PROVIDER. With three providers Express held three
+    // identical handlers and only the first ever ran; with GitHub alone there is
+    // exactly one. Moving it out is a behaviour change nobody needs -- when NO
+    // provider is configured it must not be mounted either, because there is then
+    // no flow that can put an accessKey in the session.
     router.get("/accesskey", limiter, this._cookieSessionMiddleware, (req: Request, res: Response): any => {
       const accessKey: string = req.session["accessKey"];
       const isNewAccount: boolean = req.session["isNewAccount"];
@@ -450,66 +458,6 @@ export class PassportAuthentication {
       new passportGitHub.Strategy(
         options,
         (accessToken: string, refreshToken: string, profile: passportGitHub.Profile, done: (err?: any, user?: any) => void): void => {
-          done(/*err*/ null, profile);
-        }
-      )
-    );
-
-    this.setupCommonRoutes(router, providerName, strategyName);
-  }
-
-  private setupMicrosoftRoutes(router: Router, microsoftClientId: string, microsoftClientSecret: string): void {
-    const providerName = PassportAuthentication.MICROSOFT_PROVIDER_NAME;
-    const strategyName = "windowslive";
-    const options: passportWindowsLive.IStrategyOptions = {
-      clientID: microsoftClientId,
-      clientSecret: microsoftClientSecret,
-      callbackURL: this.getCallbackUrl(providerName),
-      scope: ["wl.signin", "wl.emails"],
-      state: true,
-    };
-
-    passport.use(
-      new passportWindowsLive.Strategy(
-        options,
-        (accessToken: string, refreshToken: string, profile: passport.Profile, done: (error: any, user: any) => void): void => {
-          done(/*err*/ null, profile);
-        }
-      )
-    );
-
-    this.setupCommonRoutes(router, providerName, strategyName);
-  }
-
-  private setupAzureAdRoutes(router: Router, microsoftClientId: string, microsoftClientSecret: string): void {
-    const providerName = PassportAuthentication.AZURE_AD_PROVIDER_NAME;
-    const strategyName = "azuread-openidconnect";
-    const options: any = {
-      redirectUrl: this.getCallbackUrl(providerName),
-      clientID: microsoftClientId,
-      clientSecret: microsoftClientSecret,
-      identityMetadata: `https://login.microsoftonline.com/${
-        process.env["MICROSOFT_TENANT_ID"] || "common"
-      }/v2.0/.well-known/openid-configuration`,
-      responseMode: "query",
-      responseType: "code",
-      scope: ["email", "profile"],
-      skipUserProfile: true, // Should be set to true for Azure AD
-      validateIssuer: false, // We allow AD authentication across multiple tenants
-      allowHttpForRedirectUrl: true,
-    };
-
-    passport.use(
-      new passportActiveDirectory.OIDCStrategy(
-        options,
-        (
-          iss: string,
-          sub: string,
-          profile: passport.Profile,
-          accessToken: string,
-          refreshToken: string,
-          done: (error: any, user: any) => void
-        ) => {
           done(/*err*/ null, profile);
         }
       )

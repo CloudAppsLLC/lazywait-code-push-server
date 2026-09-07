@@ -1,0 +1,145 @@
+# ============================================================================
+# codepush.lazywait.com — Caddy vhost for the CodePush server.
+#
+# THIS FILE IS NOT LOADED BY ANYTHING. It is a fragment to be pasted, once, into
+# the Caddyfile that the shared Caddy container actually reads.
+#
+# WHERE IT GOES
+# -------------
+#   Repo:  CloudAppsLLC/LazyWaitInternalAPI
+#   File:  deploy/vps/Caddyfile
+#   Where: at the end, after the ulnk.co block.
+#
+# PASTE IT INTO THE COMMITTED FILE, NOT INTO THE ONE ON THE SERVER. The caddy
+# container bind-mounts ./deploy/vps/Caddyfile from the /opt/lazywait git
+# checkout (docker-compose.yml, caddy `volumes:`), so anything appended
+# server-side is wiped by the next `git pull`. That has already happened once in
+# this stack: the apiv2-dev vhost was added on the box, vanished on a pull along
+# with its certificate, and every sandbox sign-in died with
+# ERR_SSL_PROTOCOL_ERROR. Commit it, pull it, then reload.
+#
+# STEPS
+# -----
+#   1. DNS FIRST. codepush.lazywait.com -> 8.213.81.231 (an A record) must
+#      resolve BEFORE Caddy loads this block, or the ACME HTTP-01 challenge
+#      fails and Caddy retries every minute serving nothing on that name. The
+#      other sites are unaffected while it retries.
+#   2. Paste this block into deploy/vps/Caddyfile in LazyWaitInternalAPI, commit,
+#      push, and `git pull` in /opt/lazywait on the VPS.
+#   3. Bring the codepush container up first (deploy/README.md §4) so the
+#      upstream exists; Caddy 502s an absent upstream, which is survivable but
+#      noisy.
+#   4. Reload without dropping connections:
+#        docker exec lazywait-caddy caddy reload --config /etc/caddy/Caddyfile
+#   5. Verify:  curl -sS https://codepush.lazywait.com/version
+#
+# WHY THIS BLOCK DOES NOT `import accesslog`
+# ------------------------------------------
+# Every other vhost in deploy/vps/Caddyfile does, and this one deliberately does
+# not. That snippet's filter is `request>headers delete` — it drops the ENTIRE
+# request-header map, not a named subset (deploy/vps/Caddyfile, the `(accesslog)`
+# block). It is right for the API: those lines carried `Authorization: Bearer …`
+# on every dashboard call and grew a 25 GB log that filled the 40 GB root disk.
+#
+# But the App Service retirement decision is made from ONE request header,
+# `X-Legacy-Host: azure`, stamped by deploy/legacy-proxy. Importing the shared
+# snippet here deletes the only evidence that the legacy hostname is still in
+# use, and nobody discovers that until they go looking for the number — by which
+# time the 30-day window has to start over.
+#
+# So this vhost carries its own log directive INLINE. Inline rather than a second
+# shared snippet on purpose: an `import` of a snippet that has not been added to
+# the target file makes Caddy refuse to start, which takes every OTHER site on
+# this box down with it. A self-contained block cannot do that.
+#
+# Caddy's filter has no allow-list mode, so the sensitive headers go by NAME and
+# everything else survives. `wrap json` (not `console`) is what makes the
+# retirement query a jq one-liner instead of a regex — see
+# deploy/legacy-proxy/README.md, "Retirement criteria".
+#
+# TLS: no `tls` directive. codepush.lazywait.com is a real domain, so Caddy
+# auto-provisions and auto-renews via Let's Encrypt using the global `email
+# asad@lazywait.com` already set in that file. Publicly-trusted TLS is a hard
+# requirement here, not a nicety: iOS sets NSAllowsArbitraryLoads=false with an
+# EMPTY NSExceptionDomains, so an untrusted or self-signed cert makes OTA
+# invisible to every iPad in the fleet with no error anyone will see.
+# ============================================================================
+
+codepush.lazywait.com {
+	# Bundle uploads. Must stay STRICTLY ABOVE the container's
+	# UPLOAD_SIZE_LIMIT_MB (100, set in deploy/docker-compose.codepush.yml) so
+	# that an oversized release is rejected by the application — which answers a
+	# readable error the CLI prints — instead of being truncated by the proxy
+	# mid-body, which surfaces as an opaque socket error at the client and a
+	# half-written temp file at the server. 120MB is that margin plus multipart
+	# framing overhead.
+	request_body {
+		max_size 120MB
+	}
+
+	# `codepush` is the service name in deploy/docker-compose.codepush.yml, which
+	# compose registers as a network alias on the shared `lazywait_lazywait`
+	# network; the container_name `lazywait-codepush` resolves to the same
+	# container if you ever need to be explicit. Port 9002 is this box's third
+	# app port (9000 prod API, 9001 dev API).
+	reverse_proxy codepush:9002 {
+		# The app has `trust proxy` on and reads X-Forwarded-For. That value ends
+		# up in AccessKey.createdBy — treat it as an audit breadcrumb, not
+		# evidence: getIpAddress() consults seven client-settable headers before
+		# the socket.
+		header_up X-Real-IP {remote_host}
+		header_up Host {host}
+
+		# 5 minutes each way. A release is a single request carrying up to 100 MB
+		# uploaded from an office connection, and the server then walks the zip
+		# and generates diffs against previous packages before it answers. The
+		# default 30s truncates a perfectly good release with no useful error.
+		# The container's own REQUEST_TIMEOUT_IN_MILLISECONDS is set to 300000 to
+		# match; leave the pair aligned, or the smaller of the two is the real
+		# limit and the other is decoration.
+		transport http {
+			read_timeout 300s
+			write_timeout 300s
+		}
+	}
+
+	# update_check responses are small JSON; the bundles themselves are served
+	# from object storage, not through here, so this compresses the chatty half
+	# and never touches the expensive half.
+	encode gzip zstd
+
+	# NOT OPTIONAL, AND NOT JUST HOUSEKEEPING. Retiring the Azure App Service is
+	# gated on evidence that no fielded device still polls it, and the only
+	# defensible measure of that is DISTINCT client_unique_id PER app_version —
+	# not request volume, which a handful of chatty retrying tills dominate.
+	# CodePush clients send deployment_key / app_version / client_unique_id in
+	# the QUERY STRING of every update check, so `request.uri` carries all three
+	# with zero application code; this fork has no structured logging of its own.
+	# `X-Legacy-Host` is what separates traffic that arrived through the demoted
+	# App Service from traffic that came here directly. Delete this block and the
+	# App Service can never be retired on evidence, because there will be none.
+	#
+	# NOT `import accesslog` — see the header of this file. That snippet deletes
+	# the whole request-header map and would take X-Legacy-Host with it.
+	log {
+		output stdout
+		format filter {
+			wrap json
+
+			# By NAME, because Caddy's filter can only delete, never allow-list.
+			# Authorization is a live CodePush access key on every management
+			# call; Cookie is the OAuth session. Accept / Accept-Encoding are
+			# just noise on a line that is written once per update check per
+			# till. Everything not named here — X-Legacy-Host included —
+			# survives.
+			request>headers>Authorization delete
+			request>headers>Cookie delete
+			request>headers>Accept delete
+			request>headers>Accept-Encoding delete
+
+			# Response headers are never needed and are where the API's log
+			# picked up Set-Cookie.
+			resp_headers delete
+		}
+	}
+}

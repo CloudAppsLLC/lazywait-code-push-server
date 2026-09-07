@@ -5,8 +5,9 @@ import * as api from "./api";
 import { AzureStorage } from "./storage/azure-storage";
 import { fileUploadMiddleware } from "./file-upload-manager";
 import { JsonStorage } from "./storage/json-storage";
-import { RedisManager } from "./redis-manager";
+import { createMetricsManager, MetricsManager } from "./metrics-manager";
 import { Storage } from "./storage/storage";
+import { SupabaseStorage } from "./storage/supabase-storage";
 import { Response } from "express";
 const { DefaultAzureCredential } = require("@azure/identity");
 const { SecretClient } = require("@azure/keyvault-secrets");
@@ -19,6 +20,61 @@ import * as q from "q";
 interface Secret {
   id: string;
   value: string;
+}
+
+// Hostnames a browser can only reach from the machine the process runs on.
+const LOOPBACK_HOSTNAME_TEST: RegExp = /^(?:localhost|127(?:\.\d{1,3}){3}|\[?::1\]?)$/i;
+
+function isLoopbackServerUrl(serverUrl: string): boolean {
+  // Unset SERVER_URL is the shape of a developer running `npm start` on a laptop:
+  // the OAuth flow needs it, so any deployment that serves developers has it set.
+  if (!serverUrl) {
+    return true;
+  }
+
+  try {
+    return LOOPBACK_HOSTNAME_TEST.test(new URL(serverUrl).hostname);
+  } catch (error) {
+    // Unparseable means "we cannot prove this is local", which resolves to refuse.
+    return false;
+  }
+}
+
+// DEBUG_DISABLE_AUTH USED TO BE A LIE, and that is why this function exists.
+//
+// `auth.authenticate` was applied unconditionally BELOW the if/else that mounts
+// the impersonation middleware, so with the flag on, every management request
+// still went through the bearer strategy: the flag wrote `req.user` and the real
+// strategy overwrote it a microsecond later, or -- with no Authorization header --
+// answered 401 first. Whoever set the flag concluded the SERVER was broken.
+// (The mechanism usually blamed, `passport.initialize()` living inside the router
+// this branch never mounts, is NOT the cause: passport 0.6's authenticate()
+// installs the request extensions itself and short-circuits to the supplied
+// callback, so the bearer strategy runs perfectly well without initialize().)
+//
+// Making the flag honest means making it REAL, and a real auth bypass here hands
+// an anonymous caller the ability to push arbitrary JavaScript to every till in
+// the fleet. So it is honoured only where it cannot be reached from outside, and
+// it REFUSES TO BOOT anywhere else rather than quietly degrading: a container
+// that will not start is a bug report; a container that silently serves an open
+// management API is an incident.
+function isAuthBypassEnabled(): boolean {
+  if (process.env.DEBUG_DISABLE_AUTH !== "true") {
+    return false;
+  }
+
+  if (process.env.NODE_ENV === "production" || !isLoopbackServerUrl(process.env.SERVER_URL)) {
+    throw new Error(
+      "DEBUG_DISABLE_AUTH=true disables authentication on the CodePush MANAGEMENT API, " +
+        "which can release arbitrary JavaScript to every device in the fleet. It is honoured " +
+        "only when NODE_ENV is not 'production' and SERVER_URL is unset or loopback. " +
+        `Refusing to start (NODE_ENV=${process.env.NODE_ENV || "<unset>"}, ` +
+        `SERVER_URL=${process.env.SERVER_URL || "<unset>"}). ` +
+        "Unset DEBUG_DISABLE_AUTH and authenticate with an access key instead."
+    );
+  }
+
+  return true;
 }
 
 function bodyParserErrorHandler(err: any, req: express.Request, res: express.Response, next: Function): void {
@@ -43,6 +99,15 @@ export function start(done: (err?: any, server?: express.Express, storage?: Stor
     .then(async () => {
       if (useJsonStorage) {
         storage = new JsonStorage();
+      } else if (process.env.CODEPUSH_STORAGE_BACKEND === "supabase") {
+        // EXPLICIT opt-in, and deliberately ahead of the Azure branches rather
+        // than replacing them. The cutover runs in two flips: FLIP A moves the
+        // NETWORK (container on the VPS, App Service demoted to a proxy) while
+        // still running THIS process against the existing Azure table and blobs,
+        // and only FLIP B swaps the data layer by setting this one variable.
+        // Both Azure paths therefore have to keep working untouched, and the
+        // revert from FLIP B is un-setting this variable plus a restart.
+        storage = new SupabaseStorage();
       } else if (!process.env.AZURE_KEYVAULT_ACCOUNT) {
         storage = new AzureStorage();
       } else {
@@ -62,7 +127,19 @@ export function start(done: (err?: any, server?: express.Express, storage?: Stor
       const app = express();
       const auth = api.auth({ storage: storage });
       const appInsights = api.appInsights();
-      const redisManager = new RedisManager();
+      // Cache + deployment metrics. Which implementation this is depends on
+      // CODEPUSH_METRICS_BACKEND and NOTHING else -- unset (the default) is the
+      // Azure Redis manager, byte for byte today's behaviour, which is what
+      // FLIP A of the cutover runs on. `supabase` selects the in-process cache
+      // plus Postgres metrics and drops the Redis instance entirely.
+      //
+      // Deliberately a SEPARATE switch from CODEPUSH_STORAGE_BACKEND above:
+      // being able to move the data layer and the metrics independently is what
+      // makes a partial rollback possible. FLIP B sets both.
+      //
+      // The variable below keeps the name `redisManager` because that is the
+      // property name on both router configs; its TYPE is now the interface.
+      const redisManager: MetricsManager = createMetricsManager();
 
       // First, to wrap all requests and catch all exceptions.
       app.use(domain);
@@ -139,7 +216,9 @@ export function start(done: (err?: any, server?: express.Express, storage?: Stor
       }
 
       if (process.env.DISABLE_MANAGEMENT !== "true") {
-        if (process.env.DEBUG_DISABLE_AUTH === "true") {
+        if (isAuthBypassEnabled()) {
+          console.log("WARNING: DEBUG_DISABLE_AUTH is set. The management API is UNAUTHENTICATED.");
+
           app.use((req, res, next) => {
             let userId: string = "default";
             if (process.env.DEBUG_USER_ID) {
@@ -154,10 +233,15 @@ export function start(done: (err?: any, server?: express.Express, storage?: Stor
 
             next();
           });
+
+          app.use(fileUploadMiddleware, api.management({ storage: storage, redisManager: redisManager }));
         } else {
+          // auth.authenticate MUST stay inside this branch. Hoisting it above the
+          // if/else -- where it lived until the Azure exit -- put the bearer
+          // strategy in front of the impersonated user and made the bypass inert.
           app.use(auth.router());
+          app.use(auth.authenticate, fileUploadMiddleware, api.management({ storage: storage, redisManager: redisManager }));
         }
-        app.use(auth.authenticate, fileUploadMiddleware, api.management({ storage: storage, redisManager: redisManager }));
       } else {
         app.use(auth.legacyRouter());
       }

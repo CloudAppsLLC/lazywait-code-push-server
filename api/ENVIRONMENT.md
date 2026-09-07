@@ -26,11 +26,14 @@ To emulate Azure Blob Storage locally. Azurite needs to be installed and running
 - `GITHUB_CLIENT_ID`
 - `GITHUB_CLIENT_SECRET`
 
-#### Microsoft OAuth
+#### Microsoft OAuth — REMOVED
 
-- `MICROSOFT_CLIENT_ID`
-- `MICROSOFT_CLIENT_SECRET`
-- `MICROSOFT_TENANT_ID`: Required if application registration is single tenant.
+The `microsoft` (passport-windowslive) and `azure-ad` (passport-azure-ad) providers
+were deleted when the service moved off Azure. `MICROSOFT_CLIENT_ID`,
+`MICROSOFT_CLIENT_SECRET` and `MICROSOFT_TENANT_ID` are no longer read by any code
+path; setting them has no effect. GitHub is the only interactive provider, and the
+bearer strategy — which is what every API call actually uses — is unaffected. See
+[`script/routes/AUTH.md`](./script/routes/AUTH.md).
 
 ## Optional parameters
 
@@ -40,7 +43,7 @@ To emulate Azure Blob Storage locally. Azurite needs to be installed and running
 ### Debugging
 
 - `LOGGING`: Turn on CodePush-specific logging of API and Storage requests. If this is insufficient, Azure Storage and Express also have their own configurable logging features.
-- `DEBUG_DISABLE_AUTH`: Set to 'true' to skip authentication and impersonate existing user. When set, server uses `DEBUG_USER_ID` as logged in user for all requests requiring authentication.
+- `DEBUG_DISABLE_AUTH`: Set to 'true' to skip authentication and impersonate an existing user. When set, the server uses `DEBUG_USER_ID` as the logged-in user for all requests requiring authentication. **This leaves the management API — which can release arbitrary JavaScript to every device — open to anonymous callers, so it is honoured only when `NODE_ENV` is not `production` AND `SERVER_URL` is unset or loopback. Anywhere else the process refuses to start.** Before the Azure exit this flag silently did nothing at all: `auth.authenticate` was mounted outside the branch, so every request was still checked and every request without a token still got a 401.
 - `DEBUG_USER_ID`: Backend id of existing user to impersonate when `DEBUG_DISABLE_AUTH` is set to 'true'. Default value: 'default'. 
 
 ### Redis
@@ -49,6 +52,24 @@ To enable the Redis caching layer, set:
 - `REDIS_HOST`: The IP address where the Redis server is hosted (e.g.: codepush.redis.cache.windows.net)
 - `REDIS_PORT`: The port which Redis is listening on (usually 6379 for HTTP and 6380 for HTTPS). Note that node_redis does not support HTTPS natively.
 - `REDIS_KEY` (If authentication is enabled for Redis): The key used to authenticate requests to the Redis cache.
+
+### Cache + metrics backend
+
+- `CODEPUSH_METRICS_BACKEND`: `supabase` replaces Redis entirely — the update-check
+  response cache becomes an in-process, bounded, 1-hour cache and the deployment
+  metrics become rows in `codepush_deployment_metric` (migration 803), written
+  through the `codepush_bump_metrics` RPC. It reads `SUPABASE_URL` and
+  `SUPABASE_CODEPUSH_JWT`, the same credentials as `CODEPUSH_STORAGE_BACKEND`.
+  **Anything else — including unset — keeps the Redis manager and today's exact
+  behaviour**, which is what the network-only flip of the Azure exit runs on.
+  The two switches are independent so either can be rolled back alone.
+
+  **With `supabase`, this service may only ever run at ONE replica.** The response
+  cache is in this process's memory and `invalidateCache` — which is what makes a
+  release visible before the hour is out — cannot reach a second one. A second
+  replica answers `is_available:false` at HTTP 200 to half the fleet for up to an
+  hour after every release. (The in-process `express-rate-limit` budgets already
+  had this property; here it is correctness, not just fairness.)
 
 ### Unit testing
 To perform the unit tests against Azure storage:

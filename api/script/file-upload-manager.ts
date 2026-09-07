@@ -42,9 +42,29 @@ export function getFileWithField(req: Express.Request, field: string): Express.M
   return null;
 }
 
+/**
+ * Write an uploaded bundle to a UNIQUE temp file and return its path.
+ *
+ * WHY THE NAME IS RANDOM: this used to write `path.join(os.tmpdir(), "tempfile")`
+ * -- one literal filename for the whole process. management.ts writes it, then
+ * reads it back twice (generatePackageManifestFromZip, then
+ * addBlob(fs.createReadStream(filePath))) and unlinks it in a `.finally`. Two
+ * releases in flight -- `yarn release:android` alongside `yarn release:uwp`, or a
+ * CLI release racing the ERP CodePush page -- and B's zip overwrote A's before A
+ * had read it. Release A then computed B's manifest and shipped B's BUNDLE into
+ * A's deployment, silently, at HTTP 200. That is the exact failure
+ * scripts/partners/lib/codePushApps.js was written to prevent, reintroduced one
+ * layer down. A's `.finally` unlink also deleted the file B was still reading.
+ *
+ * This gets MORE likely, not less, after the move off Azure App Service: the
+ * response cache and the in-process rate limits mean the new deployment runs a
+ * single pinned container, so both releases land in one process rather than
+ * being spread across workers.
+ */
 export function createTempFileFromBuffer(buffer: Buffer): string {
   const tmpPath = require("os").tmpdir();
-  const tmpFilePath = require("path").join(tmpPath, "tempfile");
+  const unique = require("crypto").randomUUID();
+  const tmpFilePath = require("path").join(tmpPath, `codepush-${unique}.zip`);
   require("fs").writeFileSync(tmpFilePath, buffer);
   return tmpFilePath;
 }

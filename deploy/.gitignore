@@ -1,0 +1,16 @@
+# Runtime files that live only on the VPS, beside the compose file.
+#
+# The repo root .gitignore already covers a bare `.env`, but NOT these — and
+# .env.codepush is the file that holds the Supabase JWT, the storage key and
+# (during the two-flip cutover) the Azure storage account key. Committing it
+# would publish every credential the service has.
+.env.codepush
+.env.codepush.*
+
+# CODEPUSH_TAG pin for a rollback. Read by `docker compose` for variable
+# substitution; deliberately host-local so a pinned rollback survives a
+# `git pull` and is never accidentally shipped as the default for everyone.
+.env
+
+# Release hold marker — pauses the GHCR poller. Operational state, not config.
+.deploy-hold

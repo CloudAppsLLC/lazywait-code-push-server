@@ -1,0 +1,174 @@
+# LazyWait CodePush server — VPS deployment.
+#
+# One service. The image is built by CI and pushed to GHCR; the VPS never
+# builds. A cron poller (deploy/poll-ghcr-codepush.sh) pulls a new :latest
+# digest and recreates this one service. See deploy/README.md.
+#
+# This is the FOURTH compose project on the shared Aliyun box, after the prod
+# API (docker-compose.yml), the dev API (deploy/vps/docker-compose.dev.yml) and
+# the media relay (deploy/media/docker-compose.media.yml) — all three of which
+# live in the LazyWaitInternalAPI checkout at /opt/lazywait. It owns no Caddy of
+# its own: it joins that stack's existing network and the API's Caddy proxies to
+# it by name. The vhost block to paste lives beside this file in
+# deploy/codepush-vhost.Caddyfile.
+#
+# Roll back to a previous build by pinning the tag to a git short-sha:
+#   CODEPUSH_TAG=a3f9c12 docker compose -f docker-compose.codepush.yml up -d
+#
+# EXACTLY ONE REPLICA. Never scale this service and never put a second instance
+# behind the Caddy block. Three pieces of state are in-process and correct only
+# at one replica:
+#   * the update-check response cache, whose ONLY early invalidation is a
+#     release calling invalidateCachedPackage in the same process;
+#   * express-rate-limit's counters on /auth/*, /authenticated and the release
+#     route, which are per-process;
+#   * the release temp file under os.tmpdir().
+# Two replicas silently serve a stale update_check for up to an hour after a
+# release, which on this fleet means tills that never see a hotfix.
+
+services:
+  codepush:
+    image: ghcr.io/cloudappsllc/lazywait-code-push-server:${CODEPUSH_TAG:-latest}
+    pull_policy: always
+    container_name: lazywait-codepush
+    restart: unless-stopped
+
+    environment:
+      # Must match the published port below and the Caddy upstream.
+      PORT: 9002
+      NODE_ENV: production
+      TZ: Asia/Riyadh
+
+      # Multer's in-memory limit for the release upload. THE DEFAULT IS 200 MB
+      # AND IT IS THE MULTIPLIER ON EVERYTHING BELOW — see mem_limit. Real
+      # LazyWaitOne bundles are ~30 MB raw (the Android release bundle measured
+      # 29.6 MB), so 100 leaves better than 3x headroom while halving the worst
+      # case the container has to survive. Keep Caddy's request_body max_size
+      # strictly ABOVE this value so an oversized upload is refused by the app
+      # with a real error rather than cut off mid-body by the proxy.
+      UPLOAD_SIZE_LIMIT_MB: 100
+
+      # The app's own request timeout, which answers 408 (routes/request-timeout.ts).
+      # It DEFAULTS TO 120000, which is lower than Caddy's 300s read/write
+      # timeouts — so without this line the 2-minute app timeout is the binding
+      # constraint and the generous proxy timeouts are decorative. A 100 MB
+      # upload over a bad hotel connection needs the longer one.
+      REQUEST_TIMEOUT_IN_MILLISECONDS: 300000
+
+      # NOT SET, DELIBERATELY, AND DO NOT ADD IT:
+      #   HTTPS — server.ts reads it as Boolean(process.env.HTTPS), so the
+      #     string "false" is TRUE. Any value makes the process read
+      #     ./certs/cert.key at boot and die. Caddy terminates TLS upstream.
+      #
+      # SET IN .env.codepush, NOT HERE (secrets, or environment-specific):
+      #   CODEPUSH_STORAGE_BACKEND, CODEPUSH_METRICS_BACKEND,
+      #   SUPABASE_URL, SUPABASE_CODEPUSH_JWT,
+      #   SUPABASE_CODEPUSH_APIKEY (or SUPABASE_ANON_KEY) — REQUIRED at FLIP B;
+      #     the adapter THROWS AT BOOT without it. It is the project's ANON key
+      #     and rides the `apikey` gateway header only: `apikey` identifies the
+      #     PROJECT, `Authorization` identifies the ROLE. Sending the
+      #     codepush_api JWT in both (what `new SupabaseClient(url, jwt)` does)
+      #     is rejected at the edge as {"message":"Invalid API key"} — an error
+      #     that blames the JWT secret and costs an afternoon. It grants nothing:
+      #     803 revokes anon from every codepush_* table.
+      #   SUPABASE_CODEPUSH_STORAGE_KEY — LEAVE UNSET. Verified on a hosted
+      #     project: the codepush_api JWT writes the bucket by itself. Set it
+      #     only for a deliberately separate write credential.
+      #   SUPABASE_CODEPUSH_BUCKET,
+      #   AZURE_STORAGE_ACCOUNT, AZURE_STORAGE_ACCESS_KEY,
+      #   REDIS_HOST, REDIS_PORT, REDIS_KEY — required at FLIP A and only
+      #     there. With CODEPUSH_METRICS_BACKEND unset and these absent,
+      #     RedisManager logs one line and then no-ops every method: no
+      #     response cache, and no deployment metrics recorded at all, in the
+      #     one system that was ever their only copy.
+      #   SERVER_URL, CORS_ORIGIN, GITHUB_CLIENT_ID/SECRET,
+      #   ENABLE_PACKAGE_DIFFING, DIFF_PACKAGE_COUNT.
+      # See deploy/README.md §3 for the full list and the traps in it.
+
+    env_file:
+      # Lands on the VPS beside this compose file. Never committed.
+      - ./.env.codepush
+
+    # Loopback only. Public traffic arrives through Caddy on 443; nothing
+    # reaches 9002 from the internet because the bind address is 127.0.0.1, not
+    # 0.0.0.0. 9000 (prod API) and 9001 (dev API) are already taken on this box.
+    ports:
+      - "127.0.0.1:9002:9002"
+
+    # 2 GiB, and this is sized, not guessed. A SINGLE release holds four full
+    # copies of the bundle in this process at once:
+    #   1. multer's memoryStorage() buffer — applied to EVERY management
+    #      request, not just the release route (default-server.ts mounts
+    #      fileUploadMiddleware globally);
+    #   2. the temp file written out of that buffer (page cache, but charged to
+    #      the container's cgroup);
+    #   3. the zip walk in generatePackageManifestFromZip;
+    #   4. the upload body — @supabase/supabase-js's upload() accepts
+    #      File | Blob | ArrayBuffer | Buffer | ReadableStream, and NOT a node
+    #      fs.ReadStream, so the stream the call site passes has to be
+    #      materialised whole.
+    # At UPLOAD_SIZE_LIMIT_MB=100 that is a ~400 MB spike on top of the ~150 MB
+    # steady-state heap, and V8 will not have collected copy 1 by the time copy
+    # 4 exists. 1 GiB OOM-kills a legitimate large release; 2 GiB survives one
+    # with room for the concurrent update_check traffic. memswap_limit matches
+    # so the ceiling is real RAM and cannot be silently paid for in swap on a
+    # box that also runs the prod API.
+    mem_limit: 2g
+    memswap_limit: 2g
+    # Half a core. The only CPU-hungry path is package diffing at release time,
+    # which is bounded by DIFF_PACKAGE_COUNT and must never be allowed to
+    # starve the prod API container sharing this host.
+    cpus: 0.5
+
+    # NON-NEGOTIABLE. Docker's json-file driver is UNBOUNDED by default: on this
+    # exact box the API stack's caddy log reached 25 GB, filled the 40 GB root
+    # disk, and dockerd then logged "no space left on device" for every dropped
+    # write — which journald and rsyslog dutifully tried to write to the same
+    # full disk. The feedback loop pinned both vCPUs and looked like an
+    # application runaway. It was a log. Every container on this host rotates.
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+    networks:
+      - lazywait
+
+    # NODE, NOT wget/curl. The runtime image is node:slim plus ca-certificates
+    # and tini — it ships NEITHER wget NOR curl. The prod API container has used
+    # a `wget --quiet --spider` probe for months and has therefore permanently
+    # reported (unhealthy) while serving 200s, which is worse than no
+    # healthcheck: it trains everyone to ignore the column. node's own http
+    # module is guaranteed present.
+    #
+    # /health is the right target: it checks the storage backend, and it treats
+    # an ABSENT Redis as healthy (a configured-but-unreachable one still fails),
+    # which is the state this deployment is in permanently.
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"require('http').get('http://localhost:9002/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\"",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # Generous: the Supabase backend runs a schema check at boot and a cold
+      # container that fails its first probes gets restarted under some
+      # policies, which is also a response-cache flush for the whole fleet.
+      start_period: 40s
+
+networks:
+  # The API stack's network. Docker names it <project>_<network>, and the API's
+  # compose project is `lazywait` with a network called `lazywait`, hence
+  # `lazywait_lazywait`. external: true means ATTACH, never create or destroy —
+  # so `docker compose -f docker-compose.codepush.yml down` can never take the
+  # prod API's network (and therefore the prod API and Caddy) with it.
+  #
+  # Caddy reaches this container over that network by name. Compose registers
+  # the SERVICE name (`codepush`) as a network alias, and the `container_name`
+  # (`lazywait-codepush`) resolves too — the Caddy block uses `codepush:9002`.
+  lazywait:
+    external: true
+    name: lazywait_lazywait

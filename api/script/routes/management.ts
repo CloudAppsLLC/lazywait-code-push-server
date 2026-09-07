@@ -14,6 +14,7 @@ import * as fs from "fs";
 import * as hashUtils from "../utils/hash-utils";
 import * as q from "q";
 import * as redis from "../redis-manager";
+import { MetricsManager } from "../metrics-manager";
 import * as restTypes from "../types/rest-definitions";
 import * as security from "../utils/security";
 import * as semver from "semver";
@@ -34,7 +35,9 @@ const ACCESS_KEY_MASKING_STRING = "(hidden)";
 
 export interface ManagementConfig {
   storage: storageTypes.Storage;
-  redisManager: redis.RedisManager;
+  // The INTERFACE, not the Redis class -- see the note on AcquisitionConfig
+  // in routes/acquisition.ts. Historical property name, selected implementation.
+  redisManager: MetricsManager;
 }
 
 // A template string tag function that URL encodes the substituted values
@@ -51,7 +54,7 @@ function urlEncode(strings: string[], ...values: string[]): string {
 }
 
 export function getManagementRouter(config: ManagementConfig): Router {
-  const redisManager: redis.RedisManager = config.redisManager;
+  const redisManager: MetricsManager = config.redisManager;
   const storage: storageTypes.Storage = config.storage;
   const packageDiffing = new PackageDiffer(storage, parseInt(process.env.DIFF_PACKAGE_COUNT) || 5);
   const router: Router = Router();
