@@ -171,12 +171,46 @@ export class PostgresMetricSink implements MetricSink {
   private _client: SupabaseClient;
 
   public constructor(url: string, jwt: string) {
+    // TWO HEADERS, TWO DIFFERENT CREDENTIALS -- the same trap supabase-storage.ts
+    // documents, and this file walked straight into it.
+    //
+    // `new SupabaseClient(url, key)` sets BOTH `apikey: key` and
+    // `Authorization: Bearer key`. Supabase Cloud's gateway authenticates
+    // `apikey` against the project's OWN issued keys, so a self-signed
+    // codepush_api JWT there is rejected at the edge -- before PostgREST, before
+    // any role or policy -- as {"message":"Invalid API key"}.
+    //
+    // It surfaced as `code-push-standalone deployment ls <app>` returning a bare
+    // "Internal Server Error" while `app ls` worked perfectly: app listing goes
+    // through the STORAGE adapter (already fixed), and only deployment listing
+    // reaches the metrics client. Two clients, one fixed and one not, so the
+    // failure looked like a routing or permissions problem rather than a
+    // credential-shape one.
+    //
+    // apikey = the anon key: identifies the PROJECT, authorises nothing (803
+    // revokes anon from every codepush_* table).
+    // Authorization = the codepush_api JWT: identifies the ROLE.
+    const apiKey: string =
+      process.env.SUPABASE_CODEPUSH_APIKEY || process.env.SUPABASE_ANON_KEY || "";
+
+    if (!apiKey) {
+      throw new Error(
+        "Supabase metrics: SUPABASE_CODEPUSH_APIKEY (or SUPABASE_ANON_KEY) is required. " +
+          "It is the project's anon key and is sent ONLY as the 'apikey' gateway header."
+      );
+    }
+
     const clientOptions: SupabaseClientOptions<"public"> = {
       auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-      global: { headers: { "x-client-info": "lazywait-codepush-metrics" } },
+      global: {
+        headers: {
+          "x-client-info": "lazywait-codepush-metrics",
+          Authorization: `Bearer ${jwt}`,
+        },
+      },
     };
 
-    this._client = new SupabaseClient(url, jwt, clientOptions);
+    this._client = new SupabaseClient(url, apiKey, clientOptions);
   }
 
   /**
