@@ -71,7 +71,7 @@ If login fails:
 |---|---|
 | CLI can't connect, or talks to `localhost:3000` | You left out the server URL. Pass `https://codepush.lazywait.com`. |
 | `401` — *"The session or access key being used is invalid…"* | The key expired or was removed. Keys can't be recovered, only re-minted: log in with GitHub, or ask a teammate to run `access-key add` for you. |
-| GitHub shows a redirect-URI error | The GitHub OAuth app is missing `https://codepush.lazywait.com/auth/callback/github` (server operator fix — see `api/script/routes/AUTH.md` §3.2). |
+| GitHub shows *"Be careful! The redirect_uri is not associated with this application"* | The GitHub OAuth app's callback URL isn't `https://codepush.lazywait.com/auth/callback/github` (server operator fix — see `api/script/routes/AUTH.md` §3.2). Log in with an access key from a teammate meanwhile. |
 | Browser lands on the old `azurewebsites.net` host | The server's `SERVER_URL` is not `https://codepush.lazywait.com` (server operator fix). |
 | Login page offers no GitHub button | The server is missing `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` (server operator fix). |
 | Your account was registered with Microsoft | Microsoft sign-in is gone. Run `link` with GitHub (matching email), or get an access key from a teammate. |

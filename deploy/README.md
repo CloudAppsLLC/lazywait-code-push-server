@@ -333,7 +333,10 @@ For the browser flow to work, all three must hold (full detail in
 
 1. `SERVER_URL=https://codepush.lazywait.com` in `.env.codepush`.
 2. The GitHub OAuth app lists `https://codepush.lazywait.com/auth/callback/github`
-   as a callback URL (next to the Azure one until the App Service is retired).
+   as its callback URL. An OAuth App holds ONE callback, so either repoint the existing
+   app (Azure loses browser sign-in) or register a second app for this host and use its
+   client id/secret here. Missing, GitHub shows *"The redirect_uri is not associated
+   with this application."*
 3. `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` set in `.env.codepush`.
 
 Quick check from anywhere: `curl -sS https://codepush.lazywait.com/auth/login | grep -i github`.
@@ -359,7 +362,8 @@ admin registers first, then the variable is set, then the container is restarted
 | Large release fails mid-upload with a socket error | Caddy's `request_body max_size` (120MB) must stay strictly above `UPLOAD_SIZE_LIMIT_MB` (100). If they cross, the proxy truncates the body instead of the app returning a readable error. |
 | A release takes >2 min and 408s | `REQUEST_TIMEOUT_IN_MILLISECONDS` is back at its 120000 default. It must be ≥ Caddy's 300s, or the app timeout is the binding constraint and the proxy's is decoration. |
 | `/auth/login` offers no GitHub button | `SERVER_URL`, `GITHUB_CLIENT_ID` or `GITHUB_CLIENT_SECRET` missing from `.env.codepush`. All three are required. |
-| GitHub sign-in errors on the redirect URI, or lands on `azurewebsites.net` | Callback `https://codepush.lazywait.com/auth/callback/github` not registered on the OAuth app, or `SERVER_URL` still points at Azure. |
+| GitHub: *"Be careful! The redirect_uri is not associated with this application"* | The OAuth app whose `GITHUB_CLIENT_ID` is in `.env.codepush` has a different callback URL. Set it to `https://codepush.lazywait.com/auth/callback/github` (one callback per OAuth App — see §4 login notes). |
+| GitHub sign-in lands on `azurewebsites.net` | `SERVER_URL` still points at Azure. |
 | CLI `401` with a key that used to work | Key expired or was removed. Hashes can't be reversed, so re-mint it. Not a migration problem: keys were imported unchanged. |
 | Fleet suddenly hammers the database | Someone restarted the container. The response cache is in-process; a restart is a full flush. Do not restart during a rollout. |
 

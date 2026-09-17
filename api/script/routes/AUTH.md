@@ -112,11 +112,20 @@ callback that is not registered on the OAuth app. So the rehost needs, in this o
 1. `SERVER_URL=https://codepush.lazywait.com` in the container environment. Left
    pointing at Azure, the flow authenticates and then redirects the developer back to
    the *old* host.
-2. On the GitHub OAuth app: add `https://codepush.lazywait.com/auth/callback/github`
-   as an Authorization callback URL, and set the Homepage URL to
-   `https://codepush.lazywait.com`. **Add, do not replace**, until the Azure App
-   Service is retired — during FLIP A both hosts are live and both callbacks must
-   resolve.
+2. On the GitHub OAuth app: set the Authorization callback URL to
+   `https://codepush.lazywait.com/auth/callback/github` and the Homepage URL to
+   `https://codepush.lazywait.com`. **A GitHub OAuth App holds exactly ONE callback
+   URL** (multiple callbacks are a GitHub *App* feature, not an OAuth App one), and
+   GitHub only accepts a `redirect_uri` on that URL's host. So it is one host or the
+   other — you cannot "add" the new one beside Azure's. Pick one:
+   - **Edit the existing app** to the new URL. The Azure host's browser sign-in stops
+     working; its access keys do not.
+   - **Register a second OAuth App** for `codepush.lazywait.com` and put ITS client
+     id/secret in `.env.codepush`. Both hosts keep browser sign-in until Azure retires.
+
+   Skipped, GitHub answers every sign-in with *"Be careful! The redirect_uri is not
+   associated with this application."* (seen 2026-09-17, the first developer to try
+   a fresh browser login on the new host).
 3. `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` present. Miss any one of the three and
    the GitHub provider is simply not mounted: `/auth/login` still renders, and says
    no interactive provider is configured, rather than 404ing like a broken deploy.
