@@ -42,6 +42,27 @@ Microsoft, Windows, Microsoft Azure and/or other Microsoft products and services
 
 Privacy information can be found at https://privacy.microsoft.com/.
 
+## LazyWait: logging in to the CLI
+
+The server moved off Azure and now runs on Supabase at `https://codepush.lazywait.com`. Login works the same as before — only the server URL changed. Always pass the URL; the CLI's default is `http://localhost:3000`.
+
+```shell
+# already have an access key (pre-migration keys still work):
+code-push-standalone login https://codepush.lazywait.com --accessKey <accessKey>
+
+# or sign in with GitHub in the browser, then paste the key it shows:
+code-push-standalone login https://codepush.lazywait.com
+
+# confirm
+code-push-standalone whoami
+```
+
+An **access key** is the bearer token the CLI sends to the server. The server keeps only its hash, so a lost key is re-minted, never looked up. Anyone logged in can mint one for a teammate or for CI with `code-push-standalone access-key add "<name>"` (shown once, expires in 60 days unless `--ttl` is given).
+
+GitHub is the only browser sign-in; Microsoft / Azure AD sign-in was removed. An account registered with Microsoft can run `code-push-standalone link https://codepush.lazywait.com` to attach GitHub (emails must match), or get an access key from a teammate. Details: [cli/README.md](./cli/README.md#authentication), [api/script/routes/AUTH.md](./api/script/routes/AUTH.md); server operations: [deploy/README.md](./deploy/README.md).
+
+## Pointing the apps at the server
+
 ### ANDORID
     in strings.xml, add following line, replacing server-url with your server.
     

@@ -316,6 +316,34 @@ the express-rate-limit counters and the release temp file are all in-process. A
 second replica silently serves a stale `update_check` for up to an hour after a
 release, which on this fleet means tills that never see a hotfix.
 
+### Developer login after the Supabase migration
+
+The only part of login that moved into Supabase is where access keys are stored:
+their `sha256` hashes were imported verbatim from Azure, so **no key had to be
+reissued**. Developers only change the server URL:
+
+```bash
+code-push-standalone login https://codepush.lazywait.com --accessKey <key>   # existing key
+code-push-standalone login https://codepush.lazywait.com                     # GitHub browser flow
+code-push-standalone whoami
+```
+
+For the browser flow to work, all three must hold (full detail in
+`api/script/routes/AUTH.md` §3):
+
+1. `SERVER_URL=https://codepush.lazywait.com` in `.env.codepush`.
+2. The GitHub OAuth app lists `https://codepush.lazywait.com/auth/callback/github`
+   as a callback URL (next to the Azure one until the App Service is retired).
+3. `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` set in `.env.codepush`.
+
+Quick check from anywhere: `curl -sS https://codepush.lazywait.com/auth/login | grep -i github`.
+No match means the provider is not mounted (item 1 or 3).
+
+Microsoft-registered accounts can no longer sign in interactively; they link GitHub
+with a matching email or are given an access key by an existing user.
+`ADMIN_EMAILS` / `DEFAULT_APP_OWNERS` resolve to account ids at startup, so a new
+admin registers first, then the variable is set, then the container is restarted.
+
 ---
 
 ## 5. Troubleshooting
@@ -330,6 +358,9 @@ release, which on this fleet means tills that never see a hotfix.
 | Container shows `(unhealthy)` but serves 200s | Should not happen here — the healthcheck uses node, not `wget`. If someone "fixes" it to `wget`/`curl` it will break permanently: neither binary exists in `node:slim`. That is exactly why the prod API container has reported unhealthy for months. |
 | Large release fails mid-upload with a socket error | Caddy's `request_body max_size` (120MB) must stay strictly above `UPLOAD_SIZE_LIMIT_MB` (100). If they cross, the proxy truncates the body instead of the app returning a readable error. |
 | A release takes >2 min and 408s | `REQUEST_TIMEOUT_IN_MILLISECONDS` is back at its 120000 default. It must be ≥ Caddy's 300s, or the app timeout is the binding constraint and the proxy's is decoration. |
+| `/auth/login` offers no GitHub button | `SERVER_URL`, `GITHUB_CLIENT_ID` or `GITHUB_CLIENT_SECRET` missing from `.env.codepush`. All three are required. |
+| GitHub sign-in errors on the redirect URI, or lands on `azurewebsites.net` | Callback `https://codepush.lazywait.com/auth/callback/github` not registered on the OAuth app, or `SERVER_URL` still points at Azure. |
+| CLI `401` with a key that used to work | Key expired or was removed. Hashes can't be reversed, so re-mint it. Not a migration problem: keys were imported unchanged. |
 | Fleet suddenly hammers the database | Someone restarted the container. The response cache is in-process; a restart is a full flush. Do not restart during a rollout. |
 
 ---

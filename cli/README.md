@@ -25,33 +25,56 @@ After installing CodePush CLI globally, it will be available under `code-push-st
 
 ## Account Management
 
+> **LazyWait server: `https://codepush.lazywait.com`.** Always pass it. The CLI's built-in default is `http://localhost:3000`, so `login`, `register` and `link` without a URL talk to your own machine. Since the move off Azure the server runs on Supabase, and **GitHub is the only browser sign-in** — Microsoft / Azure AD sign-in no longer exists. Existing access keys were migrated as-is and keep working.
+
 Before you can begin releasing app updates, you need to create a CodePush account. You can do this by simply running the following command once you've installed the CLI:
 
 ```
-code-push-standalone register <optional: server-url>
+code-push-standalone register https://codepush.lazywait.com
 ```
 
-This will launch a browser, asking you to authenticate with either your GitHub or Microsoft account. Once authenticated, it will create a CodePush account "linked" to your GitHub/MSA identity, and generate an access key you can copy/paste into the CLI in order to login.
+This will launch a browser, asking you to authenticate with your GitHub account. Once authenticated, it will create a CodePush account "linked" to your GitHub identity, and generate an access key you can copy/paste into the CLI in order to login.
 
 _Note: After registering, you are automatically logged-in with the CLI, so until you explicitly log out, you don't need to login again from the same machine._
 
-If you have an existing account, you may also link your account to another identity provider (e.g. Microsoft, GitHub) by running:
+If you have an existing account (for example one originally registered with Microsoft, which can no longer sign in), link GitHub to it by running:
 
 ```
-code-push-standalone link
+code-push-standalone link https://codepush.lazywait.com
 ```
 
-_Note: In order to link multiple accounts, the email address associated with each provider must match._
+_Note: Accounts are keyed by email. Linking only succeeds when your GitHub account's primary email matches the email on your CodePush account; there is no merge. If they don't match, ask a teammate who can log in to mint you an access key (see [Access Keys](#access-keys))._
 
 ### Authentication
 
-Most commands within the CodePush CLI require authentication, and therefore, before you can begin managing your account, you need to login using the GitHub or Microsoft account you used when registering. You can do this by running the following command:
+Most commands within the CodePush CLI require authentication, and therefore, before you can begin managing your account, you need to login. An **access key** is the bearer token the CLI sends on every request; logging in just means giving the CLI one. There are two ways.
+
+**With an access key you already have** (no browser — also the way to log in from CI). Keys issued before the Supabase migration still work unchanged:
 
 ```shell
-code-push-standalone login <optional: server-url>
+code-push-standalone login https://codepush.lazywait.com --accessKey <accessKey>
 ```
 
-This will launch a browser, asking you to authenticate with either your GitHub or Microsoft account. This will generate an access key that you need to copy/paste into the CLI (it will prompt you for it). You are now successfully authenticated and can safely close your browser window.
+**With GitHub in the browser:**
+
+```shell
+code-push-standalone login https://codepush.lazywait.com
+```
+
+This will launch a browser at `https://codepush.lazywait.com/auth/login`, asking you to authenticate with your GitHub account. This will generate an access key that you need to copy/paste into the CLI (it will prompt you for it). You are now successfully authenticated and can safely close your browser window.
+
+The server stores only a SHA-256 hash of each key, so nobody — including the server operators — can look up a key you've lost. Re-mint it instead. The CLI keeps the key you're logged in with in `%LOCALAPPDATA%\.code-push.config` (Windows) or `~/.code-push.config` (macOS/Linux); treat that file like a password.
+
+If login fails:
+
+| Symptom | Cause / fix |
+|---|---|
+| CLI can't connect, or talks to `localhost:3000` | You left out the server URL. Pass `https://codepush.lazywait.com`. |
+| `401` — *"The session or access key being used is invalid…"* | The key expired or was removed. Keys can't be recovered, only re-minted: log in with GitHub, or ask a teammate to run `access-key add` for you. |
+| GitHub shows a redirect-URI error | The GitHub OAuth app is missing `https://codepush.lazywait.com/auth/callback/github` (server operator fix — see `api/script/routes/AUTH.md` §3.2). |
+| Browser lands on the old `azurewebsites.net` host | The server's `SERVER_URL` is not `https://codepush.lazywait.com` (server operator fix). |
+| Login page offers no GitHub button | The server is missing `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` (server operator fix). |
+| Your account was registered with Microsoft | Microsoft sign-in is gone. Run `link` with GitHub (matching email), or get an access key from a teammate. |
 
 If at any time you want to determine if you're already logged in, you can run the following command to display the e-mail address associated with your current authentication session, which identity providers your account is linked to (e.g. GitHub):
 
@@ -85,7 +108,7 @@ By default, access keys expire in 60 days. You can specify a different expiry du
 After creating the new key, you can specify its value using the `--accessKey` flag of the `login` command, which allows you to perform "headless" authentication, as opposed to launching a browser.
 
 ```shell
-code-push-standalone login --accessKey <accessKey>
+code-push-standalone login https://codepush.lazywait.com --accessKey <accessKey>
 ```
 
 When logging in via this method, the access key will not be automatically invalidated on logout, and can be used in future sessions until it is explicitly removed from the CodePush server or expires. However, it is still recommended that you log out once your session is complete, in order to remove your credentials from disk.
